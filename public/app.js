@@ -1,9 +1,11 @@
+import { selectionFromTrace, requestTemplate } from './context.mjs';
+
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const icon = name => '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>';
 const pretty = value => JSON.stringify(value ?? null, null, 2);
-const state = { mode: 'demo', page: 'overview', report: null, labReport: null, cases: [], reports: [], status: null, busy: false, payload: 'output', callIndex: 0, stores: [], products: [], selectedStore: '', selectedProduct: '', liveReport: null };
+const state = { mode: 'demo', page: 'overview', report: null, labReport: null, cases: [], reports: [], status: null, busy: false, payload: 'output', callIndex: 0, stores: [], products: [], selectedStore: '', selectedProduct: '', activeContext: {}, liveReport: null };
 let toastTimer;
 
 function toast(message) {
@@ -90,73 +92,21 @@ async function runCase(caseId = $('#case-select').value) {
     toast(report.findings.length ? '体检完成，找到' + report.findings.length + '项待关注问题。' : '案例检查通过，可以展开每一步查看。');
   } catch (error) { toast(error.message); } finally { setBusy(false); }
 }
-function payload(raw) {
-  if (raw?.structuredContent) return raw.structuredContent;
-  if (Array.isArray(raw?.content)) {
-    for (const item of raw.content) {
-      if (item.type !== 'text') continue;
-      try { return JSON.parse(item.text); } catch {}
-      try { return JSON.parse(item.text.slice(item.text.indexOf('{'))); } catch {}
-      try { return JSON.parse(item.text.slice(item.text.indexOf('{'), item.text.lastIndexOf('}') + 1)); } catch {}
-    }
-    return null;
-  }
-  return raw;
-}
 function updatePickers(report) {
-  const previousStore = state.selectedStore, previousProduct = state.selectedProduct;
-  state.stores = []; state.products = [];
-  for (const call of [...(report?.calls || [])].reverse()) {
-    if (!['query-nearby-stores', 'delivery-query-stores'].includes(call.tool) || call.error) continue;
-    const data = payload(call.output)?.data;
-    if (Array.isArray(data)) { state.stores = data.map(store => ({ ...store, beType: call.input.beType, orderType: [1, 5].includes(call.input.beType) ? 1 : 2 })); break; }
-  }
-  state.selectedStore = state.stores.some(store => store.storeCode === previousStore) ? previousStore : state.stores[0]?.storeCode || '';
-  $('#store-picker').innerHTML = state.stores.length ? state.stores.map(store => '<option value="' + esc(store.storeCode) + '">' + esc(store.storeName || store.storeCode) + '</option>').join('') : '<option value="">暂无门店记录</option>';
+  const selection = selectionFromTrace(report?.calls || [], { storeCode: state.selectedStore, productCode: state.selectedProduct });
+  Object.assign(state, selection);
+  const channels = { 1: '到店自取', 2: '麦乐送', 5: '得来速', 6: '企业团餐' };
+  $('#store-picker').innerHTML = state.stores.length ? state.stores.map(store => '<option value="' + esc(store.storeCode) + '">' + esc(store.storeName || store.storeCode) + ' · ' + esc(channels[store.beType] || '') + '</option>').join('') : '<option value="">暂无门店记录</option>';
   $('#store-picker').value = state.selectedStore;
-  for (const call of [...(report?.calls || [])].reverse()) {
-    if (call.tool !== 'query-meals' || call.error || call.input.storeCode !== state.selectedStore) continue;
-    const meals = payload(call.output)?.data?.meals;
-    if (meals && typeof meals === 'object') state.products = Object.entries(meals).map(([code, meal]) => ({ code, name: meal.name || code }));
-    break;
-  }
-  state.selectedProduct = state.products.some(item => item.code === previousProduct) ? previousProduct : state.products[0]?.code || '';
-  $('#product-picker').innerHTML = state.products.length ? state.products.map(item => '<option value="' + esc(item.code) + '">' + esc(item.name) + '</option>').join('') : '<option value="">暂无当前门店菜单</option>';
+  $('#product-picker').innerHTML = state.products.length ? state.products.map(item => '<option value="' + esc(item.code) + '">' + esc(item.name) + '</option>').join('') : '<option value="">暂无当前渠道与时段的菜单</option>';
   $('#product-picker').value = state.selectedProduct;
-}
-function defaultModification(modification) {
-  if (!modification?.items) return undefined;
-  const values = modification.items.flatMap(group => (group.values || []).flatMap(value => {
-    const selected = (value.selectedQuantity || 0) > 0;
-    const key = selected ? value.selectedKey : value.unselectedKey;
-    return key ? [{ code: value.code, key, quantity: selected ? value.selectedQuantity : 0 }] : [];
-  }));
-  return values.length ? { values } : undefined;
 }
 function fillSample() {
   const tool = $('#tool-select').value;
-  const input = structuredClone(state.status.samples[tool] || {});
-  const store = state.stores.find(s => s.storeCode === state.selectedStore);
-  if ('storeCode' in input && store) {
-    Object.assign(input, { storeCode: store.storeCode, beType: store.beType, orderType: store.orderType });
-    if ([2, 5, 6].includes(store.beType)) input.beCode = store.beCode;
-    else delete input.beCode;
-  }
-  if (tool === 'query-meal-detail' && state.selectedProduct) input.code = state.selectedProduct;
-  if (tool === 'calculate-price' && state.selectedProduct) {
-    input.items[0].productCode = state.selectedProduct;
-    const report = state.mode === 'live' ? state.liveReport : state.report;
-    const detailCall = [...(report?.calls || [])].reverse().find(call => call.tool === 'query-meal-detail' && call.input.code === state.selectedProduct && call.input.storeCode === input.storeCode && !call.error);
-    const detail = payload(detailCall?.output)?.data;
-    if (detail) {
-      const modification = defaultModification(detail.modification);
-      if (modification) input.items[0].modification = modification;
-      if (detail.rounds?.length) input.items[0].roundList = detail.rounds.map(round => ({
-        round: String(round.id ?? round.round),
-        comboItemList: (round.choices || []).filter(choice => choice.isDefault === 1 || choice.isDefault === '1').map(choice => ({ code: choice.code, quantity: choice.quantity || 1, ...(defaultModification(choice.modification) ? { modification: defaultModification(choice.modification) } : {}) }))
-      }));
-    }
-  }
+  const report = state.mode === 'live' ? state.liveReport : state.report;
+  const input = requestTemplate(state.status.samples[tool] || {}, {
+    context: state.activeContext, productCode: state.selectedProduct, calls: report?.calls || [],
+  });
   $('#input-json').value = pretty(input);
   $('#output-json').value = ''; $('#displayed-total').value = '';
 }
@@ -187,7 +137,7 @@ async function inspect(live = false) {
     renderReport(report); renderLab(); await refreshReports();
     toast(report.findings.length ? '已完成检查，请查看诊断建议。' : live ? '查询完成，响应已脱敏。' : '在当前参数中未发现已覆盖的规则问题。');
   } catch (error) {
-    if (error.data?.report) { state.labReport = error.data.report; renderReport(error.data.report); renderLab(); await refreshReports(); }
+    if (error.data?.report) { state.labReport = error.data.report; if (live && error.data.report.source === 'live') state.liveReport = error.data.report; renderReport(error.data.report); renderLab(); await refreshReports(); }
     toast(error.message);
   } finally { setBusy(false); }
 }
@@ -203,7 +153,7 @@ async function connect() {
     go('diagnose');
     $('#tool-select').value = 'query-nearby-stores'; fillSample();
   } catch (error) {
-    state.status.connected = false;
+    state.status.connected = false; state.liveReport = null; updatePickers(null);
     if (error.data?.report) { state.labReport = error.data.report; renderReport(error.data.report); renderLab(); await refreshReports(); }
     toast(error.message);
   } finally { setBusy(false); updateLiveText(); }

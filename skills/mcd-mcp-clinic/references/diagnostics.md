@@ -13,6 +13,8 @@
 
 storeCode和beCode取自同一条门店结果。位置搜索用searchType=2及字符串city / keyword，收藏搜索用searchType=1。
 
+逐步使用该调用之前的成功门店记录解析编码绑定，不将后来另一渠道的绑定用于检查历史调用。菜单、商品详情、门店券和核价模板匹配同一门店、beType、orderType、beCode及reservationDate；业务失败的响应不能提供菜单或特调证据。
+
 明确预约时传reservationDate，北京时间yyyy-MM-dd HH:mm。格式合法不代表当前可预约，仍需核对完整可选时段。
 
 query-my-coupons是卡包资产；query-store-coupons是指定门店业务场景可用券。未记录后者时指出缺少证据，不直接断言券无效。

@@ -79,7 +79,7 @@ export class McpClient {
   }
   async connect() {
     this.session = null;
-    const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.0' } });
+    const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.1' } });
     if (!['2025-06-18', '2025-03-26'].includes(info.protocolVersion)) throw new McpError('服务端返回了本版本体检站尚未支持的协议版本。');
     this.version = info.protocolVersion;
     await this.rpc('notifications/initialized', null, true);

@@ -17,6 +17,42 @@ test('malformed user input produces diagnostics instead of throwing', () => {
   assert.ok(codes(inspectCall({ tool: 'query-nearby-stores', input: { beType: 1, searchType: 2, city: 42, keyword: {} } })).includes('STORE_LOCATION'));
   assert.ok(codes(inspectCall(quote({ ...base, items: [null] }))).includes('CART_ITEM'));
 });
+test('explicit null and scalar arguments are not treated as empty objects', () => {
+  for (const input of [null, false, 0, '', []]) assert.ok(codes(inspectCall({ tool: 'now-time-info', input })).includes('ARG_OBJECT'));
+  assert.deepEqual(inspectCall({ tool: 'now-time-info', input: {} }), []);
+});
+const malformedItems = [
+  ['null modification', { modification: null }, 'MODIFICATION_SHAPE'],
+  ['non-array modification values', { modification: { values: {} } }, 'MODIFICATION_SHAPE'],
+  ['null modification item', { modification: { values: [null] } }, 'MODIFICATION_ITEM'],
+  ['non-array rounds', { roundList: {} }, 'COMBO_SHAPE'],
+  ['null round', { roundList: [null] }, 'COMBO_SHAPE'],
+  ['non-array combo items', { roundList: [{ round: '1', comboItemList: 'invalid' }] }, 'COMBO_SHAPE'],
+  ['null combo item', { roundList: [{ round: '1', comboItemList: [null] }] }, 'COMBO_ITEM'],
+  ['nested null modification item', { roundList: [{ round: '1', comboItemList: [{ code: 'burger', quantity: 1, modification: { values: [null] } }] }] }, 'MODIFICATION_ITEM'],
+];
+for (const [name, extra, expected] of malformedItems) {
+  test(name + ' produces a field diagnostic even without upstream detail', () => {
+    const result = inspectCall(quote({ ...base, items: [{ productCode: 'combo', quantity: 1, ...extra }] }));
+    assert.ok(codes(result).includes(expected));
+    assert.ok(result.find(f => f.code === expected).detail.includes('items[0]'));
+  });
+}
+test('historical store bindings are resolved per call and ignore failed later lookups', () => {
+  const lookup = (beType, beCode) => ({ tool: beType === 5 ? 'query-nearby-stores' : 'delivery-query-stores',
+    input: beType === 5 ? { beType, searchType: 2, city: '演示城市', keyword: '演示门店' } : { beType },
+    output: { success: true, code: 200, data: [{ storeCode: base.storeCode, beCode }] } });
+  const drive = { ...base, beType: 5, beCode: 'drive-code' };
+  const delivery = { ...base, beType: 2, orderType: 2, beCode: 'delivery-code' };
+  const calls = [lookup(5, 'drive-code'), { tool: 'query-meals', input: drive }, lookup(2, 'delivery-code'),
+    { tool: 'query-meals', input: delivery }];
+  // Old exported reports can contain a global binding for the final channel.
+  const report = analyzeRun({ calls, context: { storeBinding: { storeCode: base.storeCode, beCode: 'delivery-code' } } });
+  assert.equal(report.summary.errors, 0);
+  const failed = lookup(5, 'wrong-code'); failed.output.success = false;
+  assert.equal(inspectCall({ tool: 'query-meals', input: drive }, {}, [...calls, failed]).length, 0);
+  assert.ok(codes(inspectCall({ tool: 'query-meals', input: { ...drive, beCode: 'wrong-code' } }, {}, calls)).includes('STORE_BINDING'));
+});
 for (const [beType, orderType] of [[5, 1], [2, 2], [6, 2]]) {
   test('business ' + beType + ' requires a paired beCode', () => {
     const input = { ...base, beType, orderType };

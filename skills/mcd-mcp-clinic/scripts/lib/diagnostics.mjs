@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { redact } from './redact.mjs';
+import { isRecord, canonicalTool, extractPayload, findMatchingCall, resolveCallContext } from './context.mjs';
+export { canonicalTool, extractPayload } from './context.mjs';
 
 export const SAFE_TOOLS = new Set([
   'now-time-info', 'query-nearby-stores', 'delivery-query-addresses', 'delivery-query-stores',
@@ -12,25 +14,6 @@ export const TOOL_LABELS = {
   'query-store-coupons': '门店可用券', 'query-my-coupons': '用户卡包', 'calculate-price': '整单核价',
   'query-promotions': '团餐促销', 'query-meal-assistance': '团餐助餐', 'list-nutrition-foods': '营养数据'
 };
-export const canonicalTool = name => String(name || '').replace(/^.*__/, '').replace(/_/g, '-');
-
-export function extractPayload(raw) {
-  if (!raw) return null;
-  if (raw.structuredContent) return raw.structuredContent;
-  if (raw.content && Array.isArray(raw.content)) {
-    for (const item of raw.content) {
-      if (item.type !== 'text') continue;
-      const text = String(item.text || '').trim();
-      const candidates = [text, text.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1], text.slice(text.indexOf('{')), text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)];
-      for (const candidate of candidates) {
-        if (!candidate) continue;
-        try { return JSON.parse(candidate); } catch {}
-      }
-    }
-    return null;
-  }
-  return raw;
-}
 
 function schemaErrors(value, schema, path = '参数', depth = 0) {
   if (!schema || depth > 12) return [];
@@ -63,13 +46,14 @@ function validReservation(value) {
 
 export function inspectCall(call, context = {}, previous = [], tools = []) {
   const tool = canonicalTool(call.tool);
-  const args = call.input || {};
+  const args = call.input === undefined ? {} : call.input;
   const findings = [];
   const add = (code, severity, title, detail, fix, extra = {}) => findings.push({ code, severity, title, detail, fix, tool, ...extra });
   if (!args || typeof args !== 'object' || Array.isArray(args)) {
     add('ARG_OBJECT', 'error', '参数必须是 JSON 对象', '工具参数不接受数组或空值。', '将参数改为一个 JSON 对象。');
     return findings;
   }
+  context = resolveCallContext(args, previous, context);
   const schema = tools.find(t => canonicalTool(t.name) === tool)?.inputSchema;
   if (tools.length && !tools.some(t => canonicalTool(t.name) === tool)) add('TOOL_NOT_FOUND', 'error', '当前服务未发现此工具', '该工具不在本次 tools/list 结果中。', '按当前服务返回的工具名称与 schema 调用。');
   const errors = schemaErrors(args, schema);
@@ -96,18 +80,55 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
     if (args.reservationDate && !validReservation(args.reservationDate)) add('RESERVATION_FORMAT', 'error', '预约时间格式或日期无效', '接口使用北京时间，格式为 yyyy-MM-dd HH:mm。', '例如 2026-10-20 12:30；该时段还需在门店可预约范围内。');
   }
   if (tool === 'calculate-price') {
+    const inspectModificationShape = (selected, path) => {
+      if (selected === undefined) return;
+      if (!isRecord(selected) || !Array.isArray(selected.values)) {
+        add('MODIFICATION_SHAPE', 'error', '特调参数结构不正确', path + ' 应为包含 values 数组的对象。', '按商品详情填写特调对象和 values 数组。');
+        return;
+      }
+      selected.values.forEach((value, index) => {
+        const location = path + '.values[' + index + ']';
+        if (!isRecord(value) || typeof value.code !== 'string' || !value.code || typeof value.key !== 'string' || !value.key) {
+          add('MODIFICATION_ITEM', 'error', '特调项结构不正确', location + ' 需要非空字符串 code、key。', '每个特调项使用 { code, key, quantity } 对象。');
+        } else if (!Number.isInteger(value.quantity) || value.quantity < 0) {
+          add('MODIFICATION_QUANTITY', 'error', '特调数量不正确', location + '.quantity 需要大于等于0的整数。', '选中项按详情填写数量；取消项使用数量0。');
+        }
+      });
+    };
     if (!Array.isArray(args.items) || !args.items.length) add('EMPTY_CART', 'error', '核价餐单为空', 'calculate-price 需要至少一项商品。', '从当前门店菜单中选取商品，并传 items。');
-    for (const item of Array.isArray(args.items) ? args.items : []) {
+    for (const [itemIndex, item] of (Array.isArray(args.items) ? args.items : []).entries()) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) { add('CART_ITEM', 'error', '商品项不是有效对象', 'items 中每一项都应包含商品编码和数量。', '每项使用 { productCode, quantity } 对象。'); continue; }
       if (!Number.isInteger(item.quantity) || item.quantity < 1) add('QUANTITY', 'error', '商品数量应为正整数', '商品数量需为大于等于1的整数。', '修正 items[].quantity。');
       if (!item.productCode || typeof item.productCode !== 'string') add('PRODUCT_CODE', 'error', '商品编码缺失或类型错误', '商品编码需要保留字符串类型。', '使用本次 query-meals 返回的 productCode。');
       if (Boolean(item.couponId) !== Boolean(item.couponCode)) add('COUPON_PAIR', 'error', '优惠券参数不完整', '使用优惠券时应携带同一张券的 couponId 与 couponCode。', '从门店可用券结果取得完整参数，或同时移除两项。');
-      const detailCall = [...previous].reverse().find(p => canonicalTool(p.tool) === 'query-meal-detail' && p.input?.code === item.productCode && p.input?.storeCode === args.storeCode && p.input?.beType === args.beType && (p.input?.reservationDate || '') === (args.reservationDate || '') && !p.error);
+      const path = 'items[' + itemIndex + ']';
+      inspectModificationShape(item.modification, path + '.modification');
+      if (item.roundList !== undefined) {
+        if (!Array.isArray(item.roundList)) {
+          add('COMBO_SHAPE', 'error', '套餐轮次结构不正确', path + '.roundList 应为数组。', '每个轮次使用 { round, comboItemList } 对象。');
+        } else item.roundList.forEach((round, roundIndex) => {
+          const location = path + '.roundList[' + roundIndex + ']';
+          if (!isRecord(round) || typeof round.round !== 'string' || !round.round || !Array.isArray(round.comboItemList)) {
+            add('COMBO_SHAPE', 'error', '套餐轮次结构不正确', location + ' 需要字符串 round 和 comboItemList 数组。', '使用商品详情返回的轮次ID，并以数组填写套餐子项。');
+            return;
+          }
+          round.comboItemList.forEach((choice, choiceIndex) => {
+            const child = location + '.comboItemList[' + choiceIndex + ']';
+            if (!isRecord(choice) || typeof choice.code !== 'string' || !choice.code) {
+              add('COMBO_ITEM', 'error', '套餐子项结构不正确', child + ' 需要包含字符串 code 的对象。', '从当前轮次的 choices 选取商品编码。');
+              return;
+            }
+            if (!Number.isInteger(choice.quantity) || choice.quantity < 1) add('COMBO_ITEM_QUANTITY', 'error', '套餐子项数量不符', child + '.quantity 需要正整数。', '按商品详情填写子项数量。');
+            inspectModificationShape(choice.modification, child + '.modification');
+          });
+        });
+      }
+      const detailCall = findMatchingCall(previous, 'query-meal-detail', args, p => p.input?.code === item.productCode);
       const detail = extractPayload(detailCall?.output)?.data;
       const inspectModification = (selected, definition) => {
-        if (!selected || !Array.isArray(definition?.items)) return;
-        const chosen = Array.isArray(selected.values) ? selected.values : [];
-        for (const group of definition.items) for (const value of group.values || []) {
+        if (!isRecord(selected) || !Array.isArray(definition?.items)) return;
+        const chosen = Array.isArray(selected.values) ? selected.values.filter(isRecord) : [];
+        for (const group of definition.items) for (const value of (Array.isArray(group?.values) ? group.values : []).filter(isRecord)) {
           const sent = chosen.find(v => v.code === value.code);
           if (value.unselectedKey && !sent) add('MODIFICATION_OMITTED', 'error', '特调取消项没有完整传递', '某个特调项提供了 unselectedKey，但请求里完全省略了该项。', '选中的项传 selectedKey；未选中的项传 unselectedKey 和数量0。');
           if (sent) {
@@ -119,12 +140,13 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
       };
       inspectModification(item.modification, detail?.modification);
       if (Array.isArray(detail?.rounds) && detail.rounds.length && Array.isArray(item.roundList)) {
-        for (const round of detail.rounds) {
-          const selection = item.roundList.find(r => r && String(r.round) === String(round.id ?? round.round));
-          const count = (selection?.comboItemList || []).reduce((sum, choice) => sum + (Number(choice.quantity) || 0), 0);
+        for (const round of detail.rounds.filter(isRecord)) {
+          const selection = item.roundList.find(r => isRecord(r) && String(r.round) === String(round.id ?? round.round));
+          const choices = Array.isArray(selection?.comboItemList) ? selection.comboItemList.filter(isRecord) : [];
+          const count = choices.reduce((sum, choice) => sum + (Number(choice.quantity) || 0), 0);
           if ((round.minQuantity != null && count < round.minQuantity) || (round.maxQuantity != null && count > round.maxQuantity)) add('COMBO_QUANTITY', 'error', '套餐轮次的选配数量不符', '已记录的商品详情限定了此轮次的可选数量。', '按该轮次 minQuantity / maxQuantity 完成选配。');
-          for (const choice of selection?.comboItemList || []) {
-            const definition = round.choices?.find(c => c.code === choice.code);
+          for (const choice of choices) {
+            const definition = Array.isArray(round.choices) ? round.choices.find(c => isRecord(c) && c.code === choice.code) : undefined;
             if (!definition) add('COMBO_CHOICE', 'error', '套餐选项不在已返回列表中', '当前选择不在这次商品详情返回的 choices 中。', '刷新当前门店商品详情，并从返回选项中选择。');
             if (!Number.isInteger(choice.quantity) || choice.quantity < 1 || (definition?.maxQuantity != null && choice.quantity > definition.maxQuantity)) add('COMBO_ITEM_QUANTITY', 'error', '套餐子项数量不符', '子项数量应为正整数，并且不超过该选项上限。', '按 choices[].maxQuantity 修正数量。');
             inspectModification(choice.modification, definition?.modification);
@@ -133,7 +155,7 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
       }
     }
     const withCoupon = Array.isArray(args.items) && args.items.some(item => item && (item.couponId || item.couponCode));
-    if (withCoupon && !previous.some(p => canonicalTool(p.tool) === 'query-store-coupons' && p.input?.storeCode === args.storeCode && p.input?.orderType === args.orderType && p.input?.beType === args.beType && (p.input?.beCode || '') === (args.beCode || '') && (p.input?.reservationDate || '') === (args.reservationDate || '') && p.output && !p.error && !p.output.isError && extractPayload(p.output)?.success !== false && (extractPayload(p.output)?.code == null || [0, 200, '0', '200'].includes(extractPayload(p.output).code)))) {
+    if (withCoupon && !findMatchingCall(previous, 'query-store-coupons', args)) {
       add('COUPON_STORE_CHECK', 'warning', '未记录当前门店的可用券校验', '卡包中拥有的券不等于当前门店、渠道、时段可用。当前记录可能不包含上游调用。', '调用同一业务上下文的 query-store-coupons，再用 calculate-price 核价。');
     }
     const payload = extractPayload(call.output);

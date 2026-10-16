@@ -4,14 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve, extname, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { McpClient } from './skills/mcd-mcp-clinic/scripts/lib/mcp-client.mjs';
-import { analyzeRun, inspectCall, extractPayload, SAFE_TOOLS, TOOL_LABELS } from './skills/mcd-mcp-clinic/scripts/lib/diagnostics.mjs';
+import { analyzeRun, inspectCall, SAFE_TOOLS, TOOL_LABELS } from './skills/mcd-mcp-clinic/scripts/lib/diagnostics.mjs';
 import { redact } from './skills/mcd-mcp-clinic/scripts/lib/redact.mjs';
 import { DEMO_CASES, SAMPLE_INPUTS } from './skills/mcd-mcp-clinic/scripts/lib/demo.mjs';
 import { readConfig } from './lib/config.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicRoot = resolve(root, 'public');
-const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
+const sharedContextFile = resolve(root, 'skills/mcd-mcp-clinic/scripts/lib/context.mjs');
+const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
 
 async function readJson(request) {
   if (!request.headers['content-type']?.startsWith('application/json')) throw Object.assign(new Error('请求应使用 application/json。'), { status: 415 });
@@ -52,7 +53,7 @@ export function createApp({ token = '', clientFactory = options => new McpClient
       if (origin && !hosts.some(host => origin === `http://${host}`)) return json(response, 403, { error: '已拒绝非本机页面的跨域请求。' });
       if (request.headers['sec-fetch-site'] === 'cross-site') return json(response, 403, { error: '已拒绝跨站请求。' });
       const url = new URL(request.url, `http://127.0.0.1:${port}`);
-      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.0', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
+      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.1', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
       if (request.method === 'GET' && url.pathname === '/api/demos') return json(response, 200, { cases: DEMO_CASES.map(({ run, ...meta }) => ({ ...meta, report: analyzeRun(run) })) });
       if (request.method === 'GET' && url.pathname === '/api/reports') return json(response, 200, { reports });
       if (request.method === 'POST' && url.pathname === '/api/demo') {
@@ -92,15 +93,9 @@ export function createApp({ token = '', clientFactory = options => new McpClient
         return await runLive(async () => {
           if (!connected) return json(response, 400, { error: '请先完成真实连接检查。' });
           const context = {};
-          for (const call of [...liveCalls].reverse()) {
-            if (!['query-nearby-stores', 'delivery-query-stores'].includes(call.tool)) continue;
-            const data = extractPayload(call.output)?.data;
-            const store = Array.isArray(data) ? data.find(s => s.storeCode === body.input.storeCode) : null;
-            if (store) { context.storeBinding = store; break; }
-          }
           const preflight = inspectCall({ tool: body.tool, input: body.input }, context, liveCalls, client.tools);
           if (preflight.some(f => f.severity === 'error')) {
-            const report = remember(analyzeRun({ source: 'manual', title: '发送前参数检查 · 已拦截', context, calls: [{ tool: body.tool, input: body.input, note: '未发送到 MCP。' }] }, { tools: client.tools, secrets }));
+            const report = remember(analyzeRun({ source: 'manual', title: '发送前参数检查 · 已拦截', context, calls: [...liveCalls, { tool: body.tool, input: body.input, note: '未发送到 MCP。' }] }, { tools: client.tools, secrets }));
             return json(response, 422, { error: '参数检查未通过，此次请求没有发送。', report });
           }
           const started = performance.now();
@@ -124,8 +119,8 @@ export function createApp({ token = '', clientFactory = options => new McpClient
       if (request.method !== 'GET' && request.method !== 'HEAD') return json(response, 405, { error: '不支持此请求方法。' });
       let path;
       try { path = decodeURIComponent(url.pathname); } catch { return json(response, 400, { error: '路径编码无效。' }); }
-      const file = resolve(publicRoot, '.' + (path === '/' ? '/index.html' : path));
-      if (!file.startsWith(publicRoot + sep) || !mime[extname(file)]) return json(response, 404, { error: '文件不存在。' });
+      const file = path === '/context.mjs' ? sharedContextFile : resolve(publicRoot, '.' + (path === '/' ? '/index.html' : path));
+      if ((file !== sharedContextFile && !file.startsWith(publicRoot + sep)) || !mime[extname(file)]) return json(response, 404, { error: '文件不存在。' });
       try {
         const content = await readFile(file);
         response.writeHead(200, { 'Content-Type': mime[extname(file)] });
