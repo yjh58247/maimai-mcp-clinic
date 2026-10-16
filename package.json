@@ -1,0 +1,14 @@
+{
+  "name": "maimai-mcp-clinic",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "麦麦 MCP 体检站：调用诊断、真实接入与脱敏回放",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "demo": "node skills/mcd-mcp-clinic/scripts/clinic.mjs demo price-unit"
+  }
+}
