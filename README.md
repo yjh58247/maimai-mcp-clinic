@@ -4,15 +4,17 @@
 
 面向 Skill 开发者的本地诊断工具：发送前检查业务参数，沿调用链定位问题，把排查过程导出成可复现的脱敏报告。包含可安装的诊断 Skill、可视化工作台和命令行工具。
 
-独立参赛作品，非麦当劳官方产品。
+McDonald's MCP Clinic — a local Model Context Protocol (MCP) debugging toolkit with request validation, call replay and redacted reports.
 
-![麦麦 MCP 体检站工作台](docs/preview-desktop.jpg)
+独立参赛作品，非麦当劳官方产品。支持 Windows、macOS、Linux；需要 **Node.js 22+**，无第三方运行依赖，无需 `npm install`。
 
-界面截图来自v0.1.0；最新版检查范围见[全面检查记录](docs/AUDIT.md)。
+[下载最新版](https://github.com/yjh58247/maimai-mcp-clinic/releases/latest) · [上手指南](docs/QUICKSTART.md) · [常见问题](docs/TROUBLESHOOTING.md) · [反馈问题／建议](https://github.com/yjh58247/maimai-mcp-clinic/issues/new/choose)
 
-## 立即体验
+## 无需 Token，先试用
 
-需要 **Node.js 22+**。无第三方运行依赖，无需 npm install。
+**不熟悉 Git？** 在[下载页](https://github.com/yjh58247/maimai-mcp-clinic/releases/latest)的 Assets 中下载 `maimai-mcp-clinic-v版本号.zip`，解压后进入包含 `package.json` 的文件夹。Windows 双击 **启动体检站.cmd**；macOS / Linux 在该文件夹打开终端，执行 `node server.mjs`。
+
+已有 Git 的开发者可以直接运行：
 
 ~~~sh
 git clone https://github.com/yjh58247/maimai-mcp-clinic.git
@@ -20,9 +22,9 @@ cd maimai-mcp-clinic
 node server.mjs
 ~~~
 
-默认打开 **http://127.0.0.1:4319**；端口被占用时最多顺延9个端口，以终端实际输出地址为准。Windows 也可双击 **启动体检站.cmd**。
+在浏览器打开终端输出的地址，默认是 **http://127.0.0.1:4319**；端口被占用时最多顺延9个端口。运行期间保留终端窗口。
 
-无需 Token 即可体验4个案例：
+首页选择“报价怎么放大了100倍？”，点击“运行体检”，查看金额单位与门店券校验证据提示；再选择“一条完整的健康链路”，对比6次调用全部通过的报告。全部4个案例包括：
 
 - 报价放大100倍：识别分／元混淆及缺少门店券校验。
 - 得来速菜单查询失败：发现遗漏的 beCode。
@@ -30,6 +32,10 @@ node server.mjs
 - 401认证失败：给出本机凭证排查建议。
 
 离线案例的门店、商品、价格和耗时均为虚构数据。首页统计来自当前报告，不代表实时接口性能。
+
+![麦麦 MCP 体检站工作台](docs/preview-desktop.jpg)
+
+界面截图来自 v0.1.0。v0.1.4 改善下载与上手说明；诊断能力的最近一次全面检查见 [v0.1.3 检查记录](docs/AUDIT.md)。
 
 ## 目标用户与价值
 
@@ -48,11 +54,7 @@ node server.mjs
 
 真实模式提供11个查询／核价工具，执行白名单不含创建订单、领券、抽奖或兑换。完整清单见 [MCP_INTEGRATION.md](MCP_INTEGRATION.md)。
 
-v0.1.1 将门店、业务渠道、业务编码与预约时段作为同一组上下文：菜单和特调只复用当前场景的成功响应，切换渠道或时段后重新取得对应数据。非法套餐与特调参数会给出具体字段路径，发送前拦截报告保留必要的上游证据。详见 [优化记录](docs/OPTIMIZATION.md)。
-
-v0.1.2 补齐必选套餐轮次和整组特调遗漏检查，识别重复轮次及未知特调项。连接检查和真实查询明确显示业务失败；重连会清除旧会话与旧工具列表。网页、CLI及服务共用报告格式校验，异常导入给出可操作的提示。76项测试通过。
-
-v0.1.3 全面检查诊断、协议、脱敏、回放、CLI和启动流程：修复异常预约、敏感字段变体及金额类型误判；手动检查保留正确的上游证据；报告列表按需加载详情。111项测试通过，Skill独立运行及真实MCP联调通过。详见[全面检查记录](docs/AUDIT.md)。
+参数检查以当前接口 schema 和可用上游证据为准；通过检查不代表覆盖了所有业务约束。[优化记录](docs/OPTIMIZATION.md)保留各版本的改动与验证边界。
 
 ## 接入真实 MCP
 
@@ -99,15 +101,19 @@ node skills/mcd-mcp-clinic/scripts/clinic.mjs call query-nearby-stores examples/
 ## 验证
 
 ~~~sh
-npm test
-npm run check
+node --test tests/*.test.mjs
+node scripts/check.mjs
 ~~~
 
-测试覆盖业务规则、JSON/SSE传输、会话恢复、脱敏和本机接口。真实公共数据与原生HTTP客户端的验证区别见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
+也可使用 `npm test` 与 `npm run check`。测试覆盖业务规则、JSON/SSE传输、会话恢复、脱敏和本机接口。真实公共数据与原生HTTP客户端的验证区别见 [验收记录](docs/VERIFICATION.md)。
 
 v0.1.3原生HTTP已完成官方端到端联调，发现35个工具，5次公共查询与无券核价通过。配置好本机.env后，可运行 `node scripts/native-smoke.mjs` 重测；本轮成功报告见 [原生HTTP验收](docs/NATIVE_HTTP_VERIFICATION.md)。
 
 报告只在当前服务内保留最近20份，重启清空。导入记录标注“未进行实时验证”，不会当成当前官方结果。
+
+## 反馈与参与
+
+遇到问题，先查看[常见问题](docs/TROUBLESHOOTING.md)，再通过[问题模板](https://github.com/yjh58247/maimai-mcp-clinic/issues/new/choose)提供版本、复现步骤和检查过的脱敏报告。项目欢迎实际使用反馈；如果它帮助你定位了问题，欢迎 Star 收藏，方便下次找到。
 
 ## 结构与参赛材料
 
