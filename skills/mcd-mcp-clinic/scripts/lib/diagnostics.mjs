@@ -15,32 +15,62 @@ export const TOOL_LABELS = {
   'query-promotions': '团餐促销', 'query-meal-assistance': '团餐助餐', 'list-nutrition-foods': '营养数据'
 };
 
-function schemaErrors(value, schema, path = '参数', depth = 0) {
-  if (schema === false) return [path + ' 不被当前接口允许'];
-  if (!isRecord(schema) || depth > 12) return [];
+function schemaErrors(value, schema, path = '参数') {
   const errors = [];
-  const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
-  const matches = type => type === 'null' ? value === null : type === 'array' ? Array.isArray(value) : type === 'object' ? value !== null && typeof value === 'object' && !Array.isArray(value) : type === 'integer' ? Number.isInteger(value) : type === 'number' ? typeof value === 'number' && Number.isFinite(value) : typeof value === type;
-  if (types.length && !types.some(matches)) return [`${path} 类型应为 ${types.join(' / ')}`];
-  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) errors.push(`${path} 不在接口允许的取值中`);
-  if (typeof value === 'number' && schema.minimum != null && value < schema.minimum) errors.push(`${path} 小于 ${schema.minimum}`);
-  if (typeof value === 'number' && schema.maximum != null && value > schema.maximum) errors.push(`${path} 大于 ${schema.maximum}`);
-  if (typeof value === 'string') {
-    if (schema.minLength != null && value.length < schema.minLength) errors.push(`${path} 太短`);
-    if (schema.maxLength != null && value.length > schema.maxLength) errors.push(`${path} 太长`);
-  }
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    for (const key of (Array.isArray(schema.required) ? schema.required : [])) if (!Object.hasOwn(value, key)) errors.push(`${path}.${key} 为必填项`);
-    for (const [key, val] of Object.entries(value)) {
-      if (isRecord(schema.properties) && Object.hasOwn(schema.properties, key)) errors.push(...schemaErrors(val, schema.properties[key], `${path}.${key}`, depth + 1));
-      else if (schema.additionalProperties === false) errors.push(`${path}.${key} 不在允许的字段中`);
+  // The report displays eight schema errors. Stop once those are known rather
+  // than allocating an unbounded list and spreading it onto the call stack.
+  const add = message => { if (errors.length < 8) errors.push(message); };
+  function check(value, schema, path, depth) {
+    if (errors.length >= 8) return;
+    if (schema === false) { add(path + ' 不被当前接口允许'); return; }
+    if (!isRecord(schema) || depth > 12) return;
+    const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
+    const matches = type => type === 'null' ? value === null : type === 'array' ? Array.isArray(value) : type === 'object' ? isRecord(value) : type === 'integer' ? Number.isInteger(value) : type === 'number' ? typeof value === 'number' && Number.isFinite(value) : typeof value === type;
+    if (types.length && !types.some(matches)) { add(`${path} 类型应为 ${types.join(' / ')}`); return; }
+    if (Array.isArray(schema.enum) && !schema.enum.includes(value)) add(`${path} 不在接口允许的取值中`);
+    if (typeof value === 'number' && schema.minimum != null && value < schema.minimum) add(`${path} 小于 ${schema.minimum}`);
+    if (typeof value === 'number' && schema.maximum != null && value > schema.maximum) add(`${path} 大于 ${schema.maximum}`);
+    if (typeof value === 'string') {
+      let length = 0;
+      for (const character of value) length++;
+      if (schema.minLength != null && length < schema.minLength) add(`${path} 太短`);
+      if (schema.maxLength != null && length > schema.maxLength) add(`${path} 太长`);
+    }
+    if (isRecord(value)) {
+      const patterns = [];
+      for (const [pattern, rule] of Object.entries(isRecord(schema.patternProperties) ? schema.patternProperties : {})) {
+        try { patterns.push([new RegExp(pattern, 'u'), rule]); }
+        catch { add(`${path} 的接口字段匹配规则无效，需确认工具定义`); return; }
+      }
+      for (const key of (Array.isArray(schema.required) ? schema.required : [])) {
+        if (!Object.hasOwn(value, key)) add(`${path}.${key} 为必填项`);
+        if (errors.length >= 8) return;
+      }
+      for (const [key, val] of Object.entries(value)) {
+        if (errors.length >= 8) return;
+        const declared = isRecord(schema.properties) && Object.hasOwn(schema.properties, key);
+        if (declared) check(val, schema.properties[key], `${path}.${key}`, depth + 1);
+        let matched = false;
+        for (const [pattern, rule] of patterns) {
+          if (pattern.test(key)) { matched = true; check(val, rule, `${path}.${key}`, depth + 1); }
+          if (errors.length >= 8) return;
+        }
+        if (!declared && !matched) {
+          if (schema.additionalProperties === false) add(`${path}.${key} 不在允许的字段中`);
+          else if (isRecord(schema.additionalProperties)) check(val, schema.additionalProperties, `${path}.${key}`, depth + 1);
+        }
+      }
+    }
+    if (Array.isArray(value)) {
+      if (schema.minItems != null && value.length < schema.minItems) add(`${path} 至少需要 ${schema.minItems} 项`);
+      if (schema.maxItems != null && value.length > schema.maxItems) add(`${path} 最多允许 ${schema.maxItems} 项`);
+      for (const [i, val] of value.entries()) {
+        if (errors.length >= 8) return;
+        check(val, schema.items, `${path}[${i}]`, depth + 1);
+      }
     }
   }
-  if (Array.isArray(value)) {
-    if (schema.minItems != null && value.length < schema.minItems) errors.push(`${path} 至少需要 ${schema.minItems} 项`);
-    if (schema.maxItems != null && value.length > schema.maxItems) errors.push(`${path} 最多允许 ${schema.maxItems} 项`);
-    value.forEach((val, i) => errors.push(...schemaErrors(val, schema.items, `${path}[${i}]`, depth + 1)));
-  }
+  check(value, schema, path, 0);
   return errors;
 }
 

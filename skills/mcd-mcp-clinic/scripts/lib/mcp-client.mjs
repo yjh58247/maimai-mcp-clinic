@@ -2,9 +2,10 @@ import { SAFE_TOOLS } from './diagnostics.mjs';
 import { isRecord } from './context.mjs';
 
 export class McpError extends Error {
-  constructor(message, status = 0, { retryAfter } = {}) {
+  constructor(message, status = 0, { retryAfter, httpStatus } = {}) {
     super(message); this.name = 'McpError'; this.status = status;
     if (Number.isFinite(retryAfter) && retryAfter >= 0) this.retryAfter = retryAfter;
+    if (Number.isInteger(httpStatus)) this.httpStatus = httpStatus;
   }
 }
 
@@ -37,7 +38,7 @@ export class McpClient {
         const header = response.headers.get('retry-after');
         const seconds = header && /^\d+$/.test(header) ? Number(header) : header ? Math.ceil((Date.parse(header) - Date.now()) / 1000) : undefined;
         const retryAfter = Number.isFinite(seconds) ? Math.max(0, seconds) : undefined;
-        throw new McpError(`MCP HTTP ${response.status}${response.status === 429 ? '：请求频率过高' : ''}${retryAfter != null ? `；建议等待${retryAfter}秒后手动重试` : ''}`, response.status, { retryAfter });
+        throw new McpError(`MCP HTTP ${response.status}${response.status === 429 ? '：请求频率过高' : ''}${retryAfter != null ? `；建议等待${retryAfter}秒后手动重试` : ''}`, response.status, { retryAfter, httpStatus: response.status });
       }
       if (method === 'initialize') this.session = response.headers.get('mcp-session-id');
       if (notification) { await response.body?.cancel(); return null; }
@@ -46,6 +47,14 @@ export class McpClient {
       if (!reader) throw new McpError('服务端未返回响应体。');
       const decoder = new TextDecoder();
       let buffer = '', bytes = 0;
+      let previousCR = false;
+      const append = text => {
+        if (!text) return;
+        if (!isStream) { buffer += text; return; }
+        const continuedCRLF = previousCR && text.startsWith('\n');
+        previousCR = text.endsWith('\r');
+        buffer += (continuedCRLF ? text.slice(1) : text).replace(/\r\n?/g, '\n');
+      };
       const unpack = message => {
         if (message?.jsonrpc !== '2.0' || message.id !== id) return undefined;
         if (message.error) throw new McpError(`JSON-RPC ${message.error.code}: ${message.error.message}`, message.error.code);
@@ -54,10 +63,10 @@ export class McpClient {
       };
       while (true) {
         const { value, done } = await reader.read();
-        if (value) { bytes += value.byteLength; buffer += decoder.decode(value, { stream: true }); }
+        if (value) { bytes += value.byteLength; append(decoder.decode(value, { stream: true })); }
+        if (done) append(decoder.decode());
         if (bytes > 3_000_000) throw new McpError('响应超过3MB，已停止读取。');
         if (isStream) {
-          buffer = buffer.replace(/\r\n/g, '\n');
           let boundary;
           while ((boundary = buffer.indexOf('\n\n')) !== -1) {
             const event = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
@@ -69,7 +78,6 @@ export class McpClient {
           }
         }
         if (done) {
-          buffer += decoder.decode();
           if (isStream) throw new McpError('SSE 流结束，但未收到当前请求的响应。');
           let message; try { message = JSON.parse(buffer); } catch { throw new McpError('服务端返回了无效 JSON。'); }
           const result = unpack(message);
@@ -94,7 +102,7 @@ export class McpClient {
     await this.close();
     this.version = '2025-06-18';
     try {
-      const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.4' } });
+      const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.5' } });
       if (!isRecord(info) || !['2025-06-18', '2025-03-26'].includes(info.protocolVersion)) throw new McpError('服务端返回了本版本体检站尚未支持的协议版本。');
       this.version = info.protocolVersion;
       await this.rpc('notifications/initialized', null, true);
@@ -127,7 +135,7 @@ export class McpClient {
     try { return await invoke(); }
     catch (error) {
       // Only whitelisted read operations are retried, and only once after session expiry.
-      if (error.status !== 404 || !this.session) throw error;
+      if (error.httpStatus !== 404 || !this.session) throw error;
       await this.connect();
       return await invoke();
     }
@@ -137,6 +145,9 @@ export class McpClient {
     this.session = null;
     this.tools = [];
     if (!session || !this.token) return;
-    try { await this.fetch(this.endpoint, { method: 'DELETE', redirect: 'error', headers: { Authorization: `Bearer ${this.token}`, 'Mcp-Session-Id': session, 'MCP-Protocol-Version': this.version }, signal: AbortSignal.timeout(3000) }); } catch {}
+    try {
+      const response = await this.fetch(this.endpoint, { method: 'DELETE', redirect: 'error', headers: { Authorization: `Bearer ${this.token}`, 'Mcp-Session-Id': session, 'MCP-Protocol-Version': this.version }, signal: AbortSignal.timeout(3000) });
+      await response.body?.cancel();
+    } catch {}
   }
 }
