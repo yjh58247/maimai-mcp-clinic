@@ -76,7 +76,8 @@ try {
     console.log(options.json ? JSON.stringify(report, null, 2) : markdownReport(report));
     const output = options.out;
     if (output) await writeFile(output, output.endsWith('.json') ? JSON.stringify(report, null, 2) : markdownReport(report), 'utf8');
-    if (report.summary.errors) process.exitCode = 2;
+    if (['connect', 'call'].includes(command) && report.calls.some(call => call.error)) process.exitCode = 1;
+    else if (report.summary.errors) process.exitCode = 2;
   }
 } catch (error) {
   console.error(redact(error.message, [process.env.MCD_MCP_TOKEN])); process.exitCode = 1;

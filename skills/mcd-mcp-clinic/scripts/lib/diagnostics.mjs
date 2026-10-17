@@ -136,7 +136,7 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
       if (!isRecord(item)) { add('CART_ITEM', 'error', '商品项不是有效对象', 'items[' + itemIndex + '] 应包含商品编码和数量。', '每项使用 { productCode, quantity } 对象。'); continue; }
       if (!Number.isInteger(item.quantity) || item.quantity < 1) add('QUANTITY', 'error', '商品数量应为正整数', 'items[' + itemIndex + '].quantity 需为大于等于1的整数。', '修正该商品的 quantity。');
       if (typeof item.productCode !== 'string' || !item.productCode.trim()) add('PRODUCT_CODE', 'error', '商品编码缺失或类型错误', 'items[' + itemIndex + '].productCode 需要非空字符串。', '使用本次 query-meals 返回的 productCode。');
-      if (Boolean(item.couponId) !== Boolean(item.couponCode)) add('COUPON_PAIR', 'error', '优惠券参数不完整', '使用优惠券时应携带同一张券的 couponId 与 couponCode。', '从门店可用券结果取得完整参数，或同时移除两项。');
+      if (Boolean(item.couponId) !== Boolean(item.couponCode)) add('COUPON_PAIR', 'error', '优惠券参数不完整', 'items[' + itemIndex + '] 使用优惠券时应携带同一张券的 couponId 与 couponCode。', '从门店可用券结果取得完整参数，或同时移除两项。');
       const path = 'items[' + itemIndex + ']';
       inspectModificationShape(item.modification, path + '.modification');
       if (item.roundList !== undefined) {
@@ -164,21 +164,24 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
       const inspectModification = (selected, definition, location) => {
         if (!Array.isArray(definition?.items)) return;
         if (selected !== undefined && (!isRecord(selected) || !Array.isArray(selected.values))) return;
-        const chosen = (selected?.values || []).filter(isRecord);
+        const rawChosen = selected?.values || [];
         const available = definition.items.flatMap(group => (Array.isArray(group?.values) ? group.values : []).filter(isRecord));
         const seen = new Set();
-        for (const [index, value] of chosen.entries()) {
+        for (const [index, value] of rawChosen.entries()) {
+          if (!isRecord(value)) continue;
           if (seen.has(value.code)) add('MODIFICATION_DUPLICATE', 'error', '特调项重复传递', location + '.values[' + index + '] 的 code 重复。', '同一个特调项只保留一个明确的选中或取消状态。');
           seen.add(value.code);
           if (!available.some(option => option.code === value.code)) add('MODIFICATION_CHOICE', 'error', '特调项不在已返回列表中', location + '.values[' + index + '] 的 code 不在当前详情中。', '刷新同一门店与渠道的详情，从返回特调项中选择。');
         }
         for (const value of available) {
-          const sent = chosen.find(v => v.code === value.code);
-          if (value.unselectedKey && !sent) add('MODIFICATION_OMITTED', 'error', '特调取消项没有完整传递', location + ' 缺少详情中提供了 unselectedKey 的特调项。', '选中的项传 selectedKey；未选中的项传 unselectedKey 和数量0。');
+          const sentIndex = rawChosen.findIndex(v => isRecord(v) && v.code === value.code);
+          const sent = rawChosen[sentIndex];
+          if (value.unselectedKey && !sent) add('MODIFICATION_OMITTED', 'error', '特调取消项没有完整传递', location + ' 缺少详情中 code=' + value.code + ' 且提供了 unselectedKey 的特调项。', '选中的项传 selectedKey；未选中的项传 unselectedKey 和数量0。');
           if (sent) {
+            const sentLocation = location + '.values[' + sentIndex + ']';
             const expected = sent.quantity > 0 ? value.selectedKey : value.unselectedKey;
-            if (expected && sent.key !== expected) add('MODIFICATION_KEY', 'error', '特调 key 与选中状态不一致', '特调项的 key 需要依据是否选中决定。', '数量大于0使用 selectedKey；取消时使用 unselectedKey。');
-            if (!Number.isInteger(sent.quantity) || sent.quantity < 0 || (value.maxQuantity != null && sent.quantity > value.maxQuantity) || (sent.quantity > 0 && value.minQuantity != null && sent.quantity < value.minQuantity)) add('MODIFICATION_QUANTITY', 'error', '特调数量超出允许范围', '当前数量与商品详情中的可选数量不符。', '按详情返回的 minQuantity 与 maxQuantity 选择数量。');
+            if (expected && sent.key !== expected) add('MODIFICATION_KEY', 'error', '特调 key 与选中状态不一致', sentLocation + '.key 需要依据是否选中决定。', '数量大于0使用 selectedKey；取消时使用 unselectedKey。');
+            if (!Number.isInteger(sent.quantity) || sent.quantity < 0 || (value.maxQuantity != null && sent.quantity > value.maxQuantity) || (sent.quantity > 0 && value.minQuantity != null && sent.quantity < value.minQuantity)) add('MODIFICATION_QUANTITY', 'error', '特调数量超出允许范围', sentLocation + '.quantity 与商品详情中的可选数量不符。', '按详情返回的 minQuantity 与 maxQuantity 选择数量。');
           }
         }
       };
@@ -195,14 +198,17 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
         }
         for (const round of definitions) {
           const selection = selections.find(r => String(r.round) === String(round.id ?? round.round));
-          const choices = Array.isArray(selection?.comboItemList) ? selection.comboItemList.filter(isRecord) : [];
+          const rawChoices = Array.isArray(selection?.comboItemList) ? selection.comboItemList : [];
+          const choices = rawChoices.filter(isRecord);
           const count = choices.reduce((sum, choice) => sum + (Number(choice.quantity) || 0), 0);
           if ((round.minQuantity != null && count < round.minQuantity) || (round.maxQuantity != null && count > round.maxQuantity)) add('COMBO_QUANTITY', 'error', '套餐轮次的选配数量不符', path + '.roundList 中轮次 ' + String(round.id ?? round.round) + ' 的数量不满足详情范围。', '按该轮次 minQuantity / maxQuantity 完成选配，必选轮次不能整组省略。');
-          for (const choice of choices) {
+          for (const [choiceIndex, choice] of rawChoices.entries()) {
+            if (!isRecord(choice)) continue;
+            const choiceLocation = path + '.roundList[' + item.roundList.indexOf(selection) + '].comboItemList[' + choiceIndex + ']';
             const definition = Array.isArray(round.choices) ? round.choices.find(c => isRecord(c) && c.code === choice.code) : undefined;
-            if (!definition) add('COMBO_CHOICE', 'error', '套餐选项不在已返回列表中', '当前选择不在这次商品详情返回的 choices 中。', '刷新当前门店商品详情，并从返回选项中选择。');
-            if (!Number.isInteger(choice.quantity) || choice.quantity < 1 || (definition?.maxQuantity != null && choice.quantity > definition.maxQuantity)) add('COMBO_ITEM_QUANTITY', 'error', '套餐子项数量不符', '子项数量应为正整数，并且不超过该选项上限。', '按 choices[].maxQuantity 修正数量。');
-            inspectModification(choice.modification, definition?.modification, path + '.roundList[round=' + String(round.id ?? round.round) + '].comboItemList[code=' + choice.code + '].modification');
+            if (!definition) add('COMBO_CHOICE', 'error', '套餐选项不在已返回列表中', choiceLocation + '.code 不在这次商品详情返回的 choices 中。', '刷新当前门店商品详情，并从返回选项中选择。');
+            if (!Number.isInteger(choice.quantity) || choice.quantity < 1 || (definition?.maxQuantity != null && choice.quantity > definition.maxQuantity)) add('COMBO_ITEM_QUANTITY', 'error', '套餐子项数量不符', choiceLocation + '.quantity 应为正整数，并且不超过该选项上限。', '按 choices[].maxQuantity 修正数量。');
+            inspectModification(choice.modification, definition?.modification, choiceLocation + '.modification');
           }
         }
       }
@@ -213,22 +219,31 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
     }
     const payload = extractPayload(call.output);
     const cents = payload?.data?.price;
+    const validCents = typeof cents === 'number' && Number.isFinite(cents) && cents >= 0;
+    const quoteResponded = call.output != null && !call.error && !hasBusinessError(call.output);
+    if (quoteResponded && !validCents) add('QUOTE_AMOUNT', 'error', '核价响应缺少有效金额', 'data.price 应为大于等于0的有限数字，单位为分；当前响应无法用于展示金额。', '核对原始核价响应与接口定义，保留数字类型，不将缺失值或字符串转换为成功报价。');
     const displayed = call.meta?.displayedTotal;
     const validDisplayed = typeof displayed === 'number' && Number.isFinite(displayed) && displayed >= 0;
     if (displayed != null && !validDisplayed) add('DISPLAYED_TOTAL', 'error', '页面金额不是有效数字', 'meta.displayedTotal 应为大于等于0的数字，单位为元。', '传入数字金额，不使用字符串、数组或布尔值。');
-    if (!call.error && !hasBusinessError(call.output) && Number.isFinite(cents) && validDisplayed && Math.abs(displayed - cents / 100) > 0.005) {
+    if (quoteResponded && validCents && validDisplayed && Math.abs(displayed - cents / 100) > 0.005) {
       add('PRICE_UNIT', 'error', '核价金额展示错误', `price=${cents} 的单位是分，应展示 ¥${(cents / 100).toFixed(2)}。`, '将 calculate-price 的 price 除以100；保留两位小数。', { before: { price: cents, displayedTotal: Number(displayed) }, after: { price: cents, displayedTotal: cents / 100 } });
     }
   }
   if (call.error) {
     const code = call.error.status || call.error.code;
-    const friendly = code === 401 ? ['认证失败', '在本机更新 MCP Token，重启服务后重试。'] : code === 429 ? ['触发接口限流', '停止批量调用，按服务端 Retry-After 等待后手动重试。'] : code === 404 ? ['会话或资源已失效', '重新连接，再从门店查询开始。'] : ['调用未成功', '查看错误摘要及当前接口定义，修正后重试。'];
+    const http404 = code === 404 && (call.error.httpStatus === 404 || !String(call.error.message || '').startsWith('JSON-RPC '));
+    const friendly = code === 401 ? ['认证失败', '在本机更新 MCP Token，重启服务后重试。'] : code === 429 ? ['触发接口限流', '停止批量调用，按服务端 Retry-After 等待后手动重试。'] : http404 ? ['会话或资源已失效', '重新连接，再从门店查询开始。'] : ['调用未成功', '查看错误摘要及当前接口定义，修正后重试。'];
     add('TOOL_ERROR', 'error', friendly[0], String(call.error.message || '未取得成功结果。'), friendly[1]);
   } else {
     const payload = extractPayload(call.output);
     if (hasBusinessError(call.output)) add('BUSINESS_ERROR', 'error', '接口返回业务错误', String(payload?.message || 'MCP 工具结果标记为错误。'), '根据业务错误重新核对门店、商品与权限；不能将此次结果当成成功报价。');
   }
-  return findings.filter((item, i, all) => all.findIndex(other => other.code === item.code && other.detail === item.detail) === i);
+  const seen = new Set();
+  return findings.filter(item => {
+    const key = item.code + '\0' + item.detail;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
 }
 
 export function analyzeRun(raw = {}, { tools = [], secrets = [] } = {}) {

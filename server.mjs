@@ -56,7 +56,7 @@ export function createApp({ token = '', clientFactory = options => new McpClient
       if (origin && !hosts.some(host => origin === `http://${host}`)) return json(response, 403, { error: '已拒绝非本机页面的跨域请求。' });
       if (request.headers['sec-fetch-site'] === 'cross-site') return json(response, 403, { error: '已拒绝跨站请求。' });
       const url = new URL(request.url, `http://127.0.0.1:${port}`);
-      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.5', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
+      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.6', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
       if (request.method === 'GET' && url.pathname === '/api/demos') return json(response, 200, { cases: DEMO_CASES.map(({ run, ...meta }) => ({ ...meta, report: analyzeRun(run) })) });
       if (request.method === 'GET' && url.pathname === '/api/reports') return json(response, 200, { reports: reports.map(({ id, title, createdAt, source, sourceLabel, summary, findings }) => ({ id, title, createdAt, source, sourceLabel, summary, findingCount: findings.length })) });
       if (request.method === 'GET' && url.pathname.startsWith('/api/reports/')) {

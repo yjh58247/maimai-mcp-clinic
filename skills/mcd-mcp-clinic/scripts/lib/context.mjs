@@ -29,6 +29,8 @@ export function successfulCall(call) {
   return Boolean(call && !call.error && extractPayload(call.output) != null && !hasBusinessError(call.output));
 }
 
+const hasRecordedResult = call => Boolean(call?.error) || call?.output !== undefined;
+
 export function businessContext(input = {}) {
   const beType = input?.beType;
   const context = { beType, orderType: input?.orderType ?? ([1, 5].includes(beType) ? 1 : [2, 6].includes(beType) ? 2 : undefined) };
@@ -46,8 +48,11 @@ export function sameBusinessContext(left, right, { ignoreReservation = false } =
 }
 
 export function findMatchingCall(calls, tool, input, predicate = () => true) {
-  return [...calls].reverse().find(call => canonicalTool(call?.tool) === tool && successfulCall(call) &&
+  // A failed refresh supersedes older evidence for this exact request context.
+  // Parameter-only checks have no response and must not invalidate real data.
+  const latest = [...calls].reverse().find(call => canonicalTool(call?.tool) === tool && hasRecordedResult(call) &&
     sameBusinessContext(call.input, input) && predicate(call));
+  return successfulCall(latest) ? latest : undefined;
 }
 
 export function resolveCallContext(input, previous, context = {}) {
@@ -69,13 +74,15 @@ export function selectionFromTrace(calls = [], { storeCode = '', productCode = '
   let stores = [], storeIndex = -1;
   for (let index = calls.length - 1; index >= 0; index--) {
     const call = calls[index];
-    if (!['query-nearby-stores', 'delivery-query-stores'].includes(canonicalTool(call?.tool)) || !successfulCall(call)) continue;
+    if (!['query-nearby-stores', 'delivery-query-stores'].includes(canonicalTool(call?.tool)) || !hasRecordedResult(call)) continue;
+    if (!successfulCall(call)) break;
     const data = extractPayload(call.output)?.data;
-    if (!Array.isArray(data)) continue;
+    if (!Array.isArray(data)) break;
     stores = data.filter(value => isRecord(value) && typeof value.storeCode === 'string')
       .map(store => ({ ...store, ...businessContext({ ...store, beType: call.input?.beType }) }));
     storeIndex = index; break;
   }
+  if (!stores.length) return { stores: [], products: [], selectedStore: '', selectedProduct: '', activeContext: {} };
   const selectedStore = stores.some(store => store.storeCode === storeCode) ? storeCode : stores[0]?.storeCode || '';
   let context = businessContext(stores.find(store => store.storeCode === selectedStore));
   // The attempted request selects the time slot; a failed response cannot supply its menu.

@@ -1,6 +1,6 @@
 {
   "name": "maimai-mcp-clinic",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "description": "麦麦 MCP 体检站：调用诊断、真实接入与脱敏回放",

@@ -35,7 +35,7 @@ node server.mjs
 
 ![麦麦 MCP 体检站工作台](docs/preview-desktop.jpg)
 
-界面截图来自 v0.1.0。v0.1.5 加强 schema 检查和传输边界处理，详见[边界修复记录](docs/BOUNDARY_FIXES.md)；此前的全面检查见 [v0.1.3 检查记录](docs/AUDIT.md)。
+界面截图来自 v0.1.0。v0.1.6 改善刷新失败后的数据复用、核价响应校验与错误定位，详见[本轮修复记录](docs/EVIDENCE_FIXES.md)；此前的全面检查见 [v0.1.3 检查记录](docs/AUDIT.md)。
 
 ## 目标用户与价值
 
@@ -96,7 +96,7 @@ node skills/mcd-mcp-clinic/scripts/clinic.mjs connect
 node skills/mcd-mcp-clinic/scripts/clinic.mjs call query-nearby-stores examples/store-search.json
 ~~~
 
-退出码0：记录内检查通过；2：存在需修复项；1：文件、网络或执行错误。
+退出码0：记录内检查通过；2：业务诊断、离线或导入报告存在需修复项；1：文件、执行错误或真实连接／调用的传输错误。真实调用失败仍会尽可能输出脱敏报告。
 
 ## 验证
 
@@ -107,7 +107,7 @@ node scripts/check.mjs
 
 也可使用 `npm test` 与 `npm run check`。测试覆盖业务规则、JSON/SSE传输、会话恢复、脱敏和本机接口。真实公共数据与原生HTTP客户端的验证区别见 [验收记录](docs/VERIFICATION.md)。
 
-v0.1.5原生HTTP重新完成官方端到端联调，发现35个工具，5次公共查询与无券核价通过。配置好本机.env后，可运行 `node scripts/native-smoke.mjs` 重测；本轮成功报告见 [原生HTTP验收](docs/NATIVE_HTTP_VERIFICATION.md)。
+v0.1.6原生HTTP重新完成官方端到端联调，发现35个工具，5次公共查询与无券核价通过。配置好本机.env后，可运行 `node scripts/native-smoke.mjs` 重测；本轮成功报告见 [原生HTTP验收](docs/NATIVE_HTTP_VERIFICATION.md)。
 
 报告只在当前服务内保留最近20份，重启清空。导入记录标注“未进行实时验证”，不会当成当前官方结果。
 
