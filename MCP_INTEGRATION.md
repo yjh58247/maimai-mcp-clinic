@@ -7,12 +7,13 @@
 - 初始化优先2025-06-18，可协商2025-03-26。
 - 流程：initialize → notifications/initialized → tools/list → tools/call。
 - 后续请求携带服务端分配的session ID及协商协议。会话404仅对白名单查询重连一次；429不自动重试。
+- 重连前关闭旧会话；发现失败时清理会话和旧工具列表，重复分页游标停止读取。
 
 依据：[麦当劳官方指南](https://github.com/M-China/mcd-mcp-server)、[MCP传输规范](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)。
 
 ## 使用的 Tool 与验证范围
 
-| Tool | 价值 | 本次验证 |
+| Tool | 价值 | 已记录的验证 |
 | --- | --- | --- |
 | now-time-info | 验证工具可调用，取得服务器时间 | 原生HTTP与现有官方连接器均实测成功 |
 | query-nearby-stores | 取得有效门店与业务上下文 | 上海人民广场位置搜索成功 |
@@ -27,6 +28,8 @@
 | list-nutrition-foods | 验证营养数据返回 | 接入支持，未做真实调用 |
 
 前5项已通过本项目原生HTTP客户端携带本机Token完成官方端到端联调：协议2025-06-18、发现35个工具、5次查询与核价成功。原生快照见 `examples/native-http-smoke.json`，报告见 [原生HTTP验收](docs/NATIVE_HTTP_VERIFICATION.md)。此前的宿主连接器公共数据快照仍保留在 `examples/real-mcp-smoke.json`。配置中的Token不进入报告或发布包。
+
+上述成功结果来自2026-10-16的v0.1.1。2026-10-17的v0.1.2重测遇到TLS连接中断，未取得新的实时结果；新版已通过76项自动化测试，验收范围见[验证记录](docs/VERIFICATION.md)。
 
 ## 业务调用流程
 

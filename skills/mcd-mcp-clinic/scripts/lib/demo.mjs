@@ -9,7 +9,8 @@ const common = [
   call('query-meal-detail', { ...base, code: 'DEMO_COMBO' }, { code: 'DEMO_COMBO', name: '演示双人补给餐', rounds: [{ id: 1, minQuantity: 2, maxQuantity: 2, choices: [{ code: 'DEMO_BURGER', name: '演示汉堡', quantity: 2, maxQuantity: 2, isDefault: 1 }] }] }, 159)
 ];
 const coupon = { couponId: 'demo-coupon-id', couponCode: 'demo-coupon-code', title: '演示立减券', products: [{ productCode: 'DEMO_COMBO', productName: '演示双人补给餐' }] };
-const cart = { ...base, items: [{ productCode: 'DEMO_COMBO', quantity: 1, couponId: coupon.couponId, couponCode: coupon.couponCode }] };
+const cart = { ...base, items: [{ productCode: 'DEMO_COMBO', quantity: 1, couponId: coupon.couponId, couponCode: coupon.couponCode,
+  roundList: [{ round: '1', comboItemList: [{ code: 'DEMO_BURGER', quantity: 2 }] }] }] };
 const quote = { price: 2740, productPrice: 2740, originalPrice: 3800, discount: 1060, deliveryPrice: 0, packingPrice: 0, tablewarePrice: 0 };
 
 export const DEMO_CASES = [

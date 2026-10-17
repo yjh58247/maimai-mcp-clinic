@@ -20,6 +20,9 @@ test('static app and offline API work without a Token', async () => withApp({}, 
   assert.equal(shared.status, 200);
   assert.ok(shared.headers.get('content-type').startsWith('text/javascript'));
   assert.ok((await shared.text()).includes('sameBusinessContext'));
+  const records = await fetch(url + '/records.mjs');
+  assert.equal(records.status, 200);
+  assert.ok((await records.text()).includes('recordValidationError'));
   assert.equal((await fetch(url + '/skills/mcd-mcp-clinic/scripts/lib/context.mjs')).status, 404);
   const demos = await (await fetch(url + '/api/demos')).json(); assert.equal(demos.cases.length, 4);
   const healthy = await (await post(url, '/api/demo', { caseId: 'healthy' })).json();

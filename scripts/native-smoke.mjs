@@ -5,6 +5,8 @@ import { readConfig } from '../lib/config.mjs';
 import { McpClient } from '../skills/mcd-mcp-clinic/scripts/lib/mcp-client.mjs';
 import { analyzeRun, extractPayload, inspectCall } from '../skills/mcd-mcp-clinic/scripts/lib/diagnostics.mjs';
 import { redact, markdownReport } from '../skills/mcd-mcp-clinic/scripts/lib/redact.mjs';
+import { requestTemplate } from '../skills/mcd-mcp-clinic/scripts/lib/context.mjs';
+import { SAMPLE_INPUTS } from '../skills/mcd-mcp-clinic/scripts/lib/demo.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const { token } = readConfig(root);
@@ -16,14 +18,6 @@ const client = new McpClient({ token });
 const calls = [];
 let phase = 'initialize / tools/list';
 let connection;
-const defaultModification = modification => {
-  const values = (modification?.items || []).flatMap(group => (group.values || []).flatMap(value => {
-    const quantity = value.selectedQuantity || 0;
-    const key = quantity > 0 ? value.selectedKey : value.unselectedKey;
-    return key ? [{ code: value.code, key, quantity }] : [];
-  }));
-  return values.length ? { values } : undefined;
-};
 async function invoke(tool, input) {
   phase = tool;
   const preflight = inspectCall({ tool, input }, {}, calls, client.tools);
@@ -49,20 +43,9 @@ try {
   const codes = Object.keys(menu?.meals || {});
   const productCode = codes.includes('1100') ? '1100' : codes[0];
   if (!productCode) throw new Error('当前门店未返回餐品。');
-  const detail = await invoke('query-meal-detail', { ...context, code: productCode });
-  const item = { productCode, quantity: 1 };
-  const modification = defaultModification(detail?.modification);
-  if (modification) item.modification = modification;
-  if (detail?.rounds?.length) {
-    item.roundList = detail.rounds.map(round => ({
-      round: String(round.id),
-      comboItemList: (round.choices || []).filter(choice => Number(choice.isDefault) === 1).map(choice => ({
-        code: choice.code, quantity: choice.quantity || 1,
-        ...(defaultModification(choice.modification) ? { modification: defaultModification(choice.modification) } : {})
-      }))
-    }));
-  }
-  const quote = await invoke('calculate-price', { ...context, items: [item] });
+  await invoke('query-meal-detail', { ...context, code: productCode });
+  const quoteInput = requestTemplate(SAMPLE_INPUTS['calculate-price'], { context, productCode, calls });
+  const quote = await invoke('calculate-price', quoteInput);
   if (!Number.isFinite(quote?.price)) throw new Error('核价结果缺少数值 price。');
   calls.at(-1).meta = { displayedTotal: quote.price / 100 };
   const evidence = { transport: '本项目原生 Streamable HTTP 客户端', endpoint: client.endpoint, protocolVersion: connection.protocolVersion, serverInfo: connection.serverInfo, toolCount: client.tools.length, serverDate: time?.date };

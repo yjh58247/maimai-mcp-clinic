@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { redact } from './redact.mjs';
-import { isRecord, canonicalTool, extractPayload, findMatchingCall, resolveCallContext } from './context.mjs';
+import { isRecord, canonicalTool, extractPayload, hasBusinessError, findMatchingCall, resolveCallContext } from './context.mjs';
 export { canonicalTool, extractPayload } from './context.mjs';
 
 export const SAFE_TOOLS = new Set([
@@ -125,12 +125,20 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
       }
       const detailCall = findMatchingCall(previous, 'query-meal-detail', args, p => p.input?.code === item.productCode);
       const detail = extractPayload(detailCall?.output)?.data;
-      const inspectModification = (selected, definition) => {
-        if (!isRecord(selected) || !Array.isArray(definition?.items)) return;
-        const chosen = Array.isArray(selected.values) ? selected.values.filter(isRecord) : [];
-        for (const group of definition.items) for (const value of (Array.isArray(group?.values) ? group.values : []).filter(isRecord)) {
+      const inspectModification = (selected, definition, location) => {
+        if (!Array.isArray(definition?.items)) return;
+        if (selected !== undefined && (!isRecord(selected) || !Array.isArray(selected.values))) return;
+        const chosen = (selected?.values || []).filter(isRecord);
+        const available = definition.items.flatMap(group => (Array.isArray(group?.values) ? group.values : []).filter(isRecord));
+        const seen = new Set();
+        for (const [index, value] of chosen.entries()) {
+          if (seen.has(value.code)) add('MODIFICATION_DUPLICATE', 'error', '特调项重复传递', location + '.values[' + index + '] 的 code 重复。', '同一个特调项只保留一个明确的选中或取消状态。');
+          seen.add(value.code);
+          if (!available.some(option => option.code === value.code)) add('MODIFICATION_CHOICE', 'error', '特调项不在已返回列表中', location + '.values[' + index + '] 的 code 不在当前详情中。', '刷新同一门店与渠道的详情，从返回特调项中选择。');
+        }
+        for (const value of available) {
           const sent = chosen.find(v => v.code === value.code);
-          if (value.unselectedKey && !sent) add('MODIFICATION_OMITTED', 'error', '特调取消项没有完整传递', '某个特调项提供了 unselectedKey，但请求里完全省略了该项。', '选中的项传 selectedKey；未选中的项传 unselectedKey 和数量0。');
+          if (value.unselectedKey && !sent) add('MODIFICATION_OMITTED', 'error', '特调取消项没有完整传递', location + ' 缺少详情中提供了 unselectedKey 的特调项。', '选中的项传 selectedKey；未选中的项传 unselectedKey 和数量0。');
           if (sent) {
             const expected = sent.quantity > 0 ? value.selectedKey : value.unselectedKey;
             if (expected && sent.key !== expected) add('MODIFICATION_KEY', 'error', '特调 key 与选中状态不一致', '特调项的 key 需要依据是否选中决定。', '数量大于0使用 selectedKey；取消时使用 unselectedKey。');
@@ -138,18 +146,27 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
           }
         }
       };
-      inspectModification(item.modification, detail?.modification);
-      if (Array.isArray(detail?.rounds) && detail.rounds.length && Array.isArray(item.roundList)) {
-        for (const round of detail.rounds.filter(isRecord)) {
-          const selection = item.roundList.find(r => isRecord(r) && String(r.round) === String(round.id ?? round.round));
+      inspectModification(item.modification, detail?.modification, path + '.modification');
+      if (Array.isArray(detail?.rounds) && detail.rounds.length && (item.roundList === undefined || Array.isArray(item.roundList))) {
+        const selections = (item.roundList || []).filter(isRecord);
+        const definitions = detail.rounds.filter(round => isRecord(round) && (round.id ?? round.round) != null);
+        const seen = new Set();
+        for (const [index, round] of selections.entries()) {
+          const id = String(round.round);
+          if (seen.has(id)) add('COMBO_DUPLICATE_ROUND', 'error', '套餐轮次重复传递', path + '.roundList[' + index + '] 的 round 重复。', '同一个轮次合并为一条记录，再核对该轮次的总数量。');
+          seen.add(id);
+          if (!definitions.some(value => String(value.id ?? value.round) === id)) add('COMBO_ROUND', 'error', '套餐轮次不在已返回列表中', path + '.roundList[' + index + '] 的 round 不在当前详情中。', '使用本次商品详情返回的轮次ID。');
+        }
+        for (const round of definitions) {
+          const selection = selections.find(r => String(r.round) === String(round.id ?? round.round));
           const choices = Array.isArray(selection?.comboItemList) ? selection.comboItemList.filter(isRecord) : [];
           const count = choices.reduce((sum, choice) => sum + (Number(choice.quantity) || 0), 0);
-          if ((round.minQuantity != null && count < round.minQuantity) || (round.maxQuantity != null && count > round.maxQuantity)) add('COMBO_QUANTITY', 'error', '套餐轮次的选配数量不符', '已记录的商品详情限定了此轮次的可选数量。', '按该轮次 minQuantity / maxQuantity 完成选配。');
+          if ((round.minQuantity != null && count < round.minQuantity) || (round.maxQuantity != null && count > round.maxQuantity)) add('COMBO_QUANTITY', 'error', '套餐轮次的选配数量不符', path + '.roundList 中轮次 ' + String(round.id ?? round.round) + ' 的数量不满足详情范围。', '按该轮次 minQuantity / maxQuantity 完成选配，必选轮次不能整组省略。');
           for (const choice of choices) {
             const definition = Array.isArray(round.choices) ? round.choices.find(c => isRecord(c) && c.code === choice.code) : undefined;
             if (!definition) add('COMBO_CHOICE', 'error', '套餐选项不在已返回列表中', '当前选择不在这次商品详情返回的 choices 中。', '刷新当前门店商品详情，并从返回选项中选择。');
             if (!Number.isInteger(choice.quantity) || choice.quantity < 1 || (definition?.maxQuantity != null && choice.quantity > definition.maxQuantity)) add('COMBO_ITEM_QUANTITY', 'error', '套餐子项数量不符', '子项数量应为正整数，并且不超过该选项上限。', '按 choices[].maxQuantity 修正数量。');
-            inspectModification(choice.modification, definition?.modification);
+            inspectModification(choice.modification, definition?.modification, path + '.roundList[round=' + String(round.id ?? round.round) + '].comboItemList[code=' + choice.code + '].modification');
           }
         }
       }
@@ -171,7 +188,7 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
     add('TOOL_ERROR', 'error', friendly[0], String(call.error.message || '未取得成功结果。'), friendly[1]);
   } else {
     const payload = extractPayload(call.output);
-    if (call.output?.isError || payload?.success === false || (payload?.code != null && ![0, 200, '0', '200'].includes(payload.code))) add('BUSINESS_ERROR', 'error', '接口返回业务错误', String(payload?.message || 'MCP 工具结果标记为错误。'), '根据业务错误重新核对门店、商品与权限；不能将此次结果当成成功报价。');
+    if (hasBusinessError(call.output)) add('BUSINESS_ERROR', 'error', '接口返回业务错误', String(payload?.message || 'MCP 工具结果标记为错误。'), '根据业务错误重新核对门店、商品与权限；不能将此次结果当成成功报价。');
   }
   return findings.filter((item, i, all) => all.findIndex(other => other.code === item.code) === i);
 }

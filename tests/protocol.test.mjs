@@ -49,6 +49,7 @@ test('HTTP 429 is not automatically retried', async () => {
 test('expired read-only session is reinitialized and retried once', async () => {
   let initializeCount = 0, callCount = 0;
   const client = new McpClient({ token, fetchImpl: async (url, request) => {
+    if (request.method === 'DELETE') return new Response(null, { status: 204 });
     const body = JSON.parse(request.body);
     if (body.method === 'initialize') { initializeCount++; return jsonResponse(body.id, { protocolVersion: '2025-03-26' }, { 'mcp-session-id': 'renewed' }); }
     if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
@@ -69,4 +70,43 @@ test('mismatched response IDs and JSON-RPC errors cannot be mistaken for success
   await assert.rejects(wrong.rpc('tools/list', {}), /ID/);
   const rpcError = new McpClient({ token, fetchImpl: async () => new Response('{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad params"}}', { headers: { 'content-type': 'application/json' } }) });
   await assert.rejects(rpcError.rpc('tools/list', {}), error => error.status === -32602);
+});
+
+test('failed discovery clears old tools and closes both previous and partial sessions', async () => {
+  const deleted = [];
+  const client = new McpClient({ token, fetchImpl: async (url, request) => {
+    if (request.method === 'DELETE') { deleted.push(request.headers['Mcp-Session-Id']); return new Response(null, { status: 204 }); }
+    const body = JSON.parse(request.body);
+    if (body.method === 'initialize') return jsonResponse(body.id, { protocolVersion: '2025-06-18' }, { 'mcp-session-id': 'partial' });
+    if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+    return new Response(null, { status: 503 });
+  } });
+  client.session = 'old'; client.tools = [{ name: 'now-time-info' }];
+  await assert.rejects(client.connect(), error => error.status === 503);
+  assert.deepEqual(client.tools, []); assert.equal(client.session, null);
+  assert.deepEqual(deleted, ['old', 'partial']);
+});
+for (const invalid of [null, { tools: [null] }, { tools: [{ name: '' }] }]) {
+  test('malformed discovery data is rejected without leaving usable stale tools', async () => {
+    const client = new McpClient({ token, fetchImpl: async (url, request) => {
+      const body = JSON.parse(request.body);
+      if (body.method === 'initialize') return jsonResponse(body.id, { protocolVersion: '2025-06-18' });
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+      return jsonResponse(body.id, invalid);
+    } });
+    client.tools = [{ name: 'now-time-info' }];
+    await assert.rejects(client.connect(), /有效的工具数组/);
+    assert.deepEqual(client.tools, []);
+  });
+}
+test('a repeated tools/list cursor stops pagination immediately', async () => {
+  let pages = 0;
+  const client = new McpClient({ token, fetchImpl: async (url, request) => {
+    const body = JSON.parse(request.body);
+    if (body.method === 'initialize') return jsonResponse(body.id, { protocolVersion: '2025-06-18' });
+    if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+    pages++; return jsonResponse(body.id, { tools: [{ name: 'now-time-info' }], nextCursor: 'repeated' });
+  } });
+  await assert.rejects(client.connect(), /游标/);
+  assert.equal(pages, 2); assert.deepEqual(client.tools, []);
 });

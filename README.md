@@ -48,6 +48,8 @@ npm start
 
 v0.1.1 将门店、业务渠道、业务编码与预约时段作为同一组上下文：菜单和特调只复用当前场景的成功响应，切换渠道或时段后重新取得对应数据。非法套餐与特调参数会给出具体字段路径，发送前拦截报告保留必要的上游证据。详见 [优化记录](docs/OPTIMIZATION.md)。
 
+v0.1.2 补齐必选套餐轮次和整组特调遗漏检查，识别重复轮次及未知特调项。连接检查和真实查询明确显示业务失败；重连会清除旧会话与旧工具列表。网页、CLI及服务共用报告格式校验，异常导入给出可操作的提示。76项测试通过。
+
 ## 接入真实 MCP
 
 1. 在 [麦当劳开放平台](https://open.mcd.cn/mcp) 登录并申请 Token。
@@ -99,7 +101,7 @@ npm run check
 
 测试覆盖业务规则、JSON/SSE传输、会话恢复、脱敏和本机接口。真实公共数据与原生HTTP客户端的验证区别见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
-原生HTTP已完成官方端到端联调，发现35个工具，5次公共查询与无券核价通过。配置好本机.env后，可运行 `node scripts/native-smoke.mjs` 复现；报告见 [原生HTTP验收](docs/NATIVE_HTTP_VERIFICATION.md)。
+v0.1.1原生HTTP已完成官方端到端联调，发现35个工具，5次公共查询与无券核价通过；v0.1.2本轮重测遇到TLS连接中断，未取得新的实时结果。配置好本机.env后，可运行 `node scripts/native-smoke.mjs` 重测；此前成功报告见 [原生HTTP验收](docs/NATIVE_HTTP_VERIFICATION.md)。
 
 报告只在当前服务内保留最近20份，重启清空。导入记录标注“未进行实时验证”，不会当成当前官方结果。
 

@@ -1,4 +1,5 @@
 import { selectionFromTrace, requestTemplate } from './context.mjs';
+import { recordValidationError } from './records.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -20,7 +21,7 @@ async function api(path, body) {
 }
 function setBusy(busy) {
   state.busy = busy;
-  ['#run-case', '#hero-run', '#inspect-button', '#live-call-button', '#connect-button', '#case-select', '#mode-demo', '#mode-live', '#import-button'].forEach(selector => $(selector).disabled = busy);
+  ['#run-case', '#hero-run', '#inspect-button', '#live-call-button', '#connect-button', '#case-select', '#mode-demo', '#mode-live', '#import-button', '#tool-select', '#store-picker', '#product-picker', '#fill-sample', '#input-json', '#output-json', '#displayed-total', '#edit-call'].forEach(selector => $(selector).disabled = busy);
   $('#run-case span').textContent = busy ? '检查中…' : '运行体检';
 }
 function go(page) {
@@ -198,12 +199,15 @@ function download(format) {
 }
 async function importFile(file) {
   if (!file || state.busy) return;
-  if (file.size > 1_000_000) return toast('文件超过1MB，请缩小记录范围。');
-  let raw;
-  try { raw = JSON.parse((await file.text()).replace(/^\uFEFF/, '')); } catch { return toast('无法读取 JSON 文件，请检查文件格式。'); }
-  if (raw.format !== 'mcd-clinic-report' || raw.schemaVersion !== 1 || !Array.isArray(raw.calls)) return toast('请导入由体检站导出的 v1 JSON 报告。');
   setBusy(true);
   try {
+    if (file.size > 1_000_000) { toast('文件超过1MB，请缩小记录范围。'); return; }
+    let raw;
+    try { raw = JSON.parse((await file.text()).replace(/^\uFEFF/, '')); }
+    catch { toast('无法读取 JSON 文件，请检查文件格式。'); return; }
+    const validation = recordValidationError(raw, { reportOnly: true });
+    if (validation) { toast(validation); return; }
+    if (new TextEncoder().encode(JSON.stringify(raw)).length > 1_000_000) { toast('记录编码后超过1MB，请缩小范围。'); return; }
     const { report } = await api('/api/analyze', raw);
     renderReport(report); state.labReport = report; await refreshReports(); go('overview');
     toast('导入完成，已重新脱敏并检查；没有进行实时调用。');

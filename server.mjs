@@ -8,10 +8,12 @@ import { analyzeRun, inspectCall, SAFE_TOOLS, TOOL_LABELS } from './skills/mcd-m
 import { redact } from './skills/mcd-mcp-clinic/scripts/lib/redact.mjs';
 import { DEMO_CASES, SAMPLE_INPUTS } from './skills/mcd-mcp-clinic/scripts/lib/demo.mjs';
 import { readConfig } from './lib/config.mjs';
+import { hasBusinessError } from './skills/mcd-mcp-clinic/scripts/lib/context.mjs';
+import { recordValidationError } from './skills/mcd-mcp-clinic/scripts/lib/records.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicRoot = resolve(root, 'public');
-const sharedContextFile = resolve(root, 'skills/mcd-mcp-clinic/scripts/lib/context.mjs');
+const sharedFiles = new Map(['context.mjs', 'records.mjs'].map(name => ['/' + name, resolve(root, 'skills/mcd-mcp-clinic/scripts/lib', name)]));
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
 
 async function readJson(request) {
@@ -53,7 +55,7 @@ export function createApp({ token = '', clientFactory = options => new McpClient
       if (origin && !hosts.some(host => origin === `http://${host}`)) return json(response, 403, { error: '已拒绝非本机页面的跨域请求。' });
       if (request.headers['sec-fetch-site'] === 'cross-site') return json(response, 403, { error: '已拒绝跨站请求。' });
       const url = new URL(request.url, `http://127.0.0.1:${port}`);
-      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.1', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
+      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.2', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
       if (request.method === 'GET' && url.pathname === '/api/demos') return json(response, 200, { cases: DEMO_CASES.map(({ run, ...meta }) => ({ ...meta, report: analyzeRun(run) })) });
       if (request.method === 'GET' && url.pathname === '/api/reports') return json(response, 200, { reports });
       if (request.method === 'POST' && url.pathname === '/api/demo') {
@@ -64,20 +66,23 @@ export function createApp({ token = '', clientFactory = options => new McpClient
       }
       if (request.method === 'POST' && url.pathname === '/api/analyze') {
         const body = await readJson(request);
-        if (!Array.isArray(body.calls) || !body.calls.length || body.calls.length > 100) return json(response, 400, { error: '需要1至100条调用记录。' });
-        if (body.calls.some(call => !call || typeof call !== 'object' || Array.isArray(call) || typeof call.tool !== 'string')) return json(response, 400, { error: '每条记录需要 tool 和 input 字段。' });
+        const validation = recordValidationError(body);
+        if (validation) return json(response, 400, { error: validation });
         return json(response, 200, { report: remember(analyzeRun({ ...body, source: body.format === 'mcd-clinic-report' ? 'import' : 'manual' }, { tools: client.tools, secrets })) });
       }
       if (request.method === 'POST' && url.pathname === '/api/live/connect') {
         await readJson(request);
         return await runLive(async () => {
           if (!token) return json(response, 400, { error: '本机未配置 Token。请按接入指南设置 MCD_MCP_TOKEN 后重启服务。' });
+          connected = null; liveCalls = [];
           const started = performance.now();
           try {
-            connected = await client.connect(); liveCalls = [];
+            const connection = await client.connect();
             const output = await client.call('now-time-info', {});
             liveCalls.push({ tool: 'now-time-info', input: {}, output, durationMs: Math.round(performance.now() - started) });
             const report = remember(analyzeRun({ source: 'live', title: '真实 MCP 连接检查', calls: liveCalls }, { tools: client.tools, secrets }));
+            if (hasBusinessError(output)) return json(response, 502, { error: '服务器时间检查返回业务错误，连接检查未通过。请查看诊断报告。', report });
+            connected = connection;
             return json(response, 200, { connection: { serverInfo: connected.serverInfo, protocolVersion: connected.protocolVersion, tools: client.tools.map(t => ({ name: t.name, inputSchema: t.inputSchema, callable: SAFE_TOOLS.has(t.name) })) }, report });
           } catch (error) {
             connected = null;
@@ -106,7 +111,8 @@ export function createApp({ token = '', clientFactory = options => new McpClient
           call.durationMs = Math.round(performance.now() - started);
           liveCalls.push(call); liveCalls = liveCalls.slice(-40);
           const report = remember(analyzeRun({ source: 'live', title: '真实 MCP 调用链路', calls: liveCalls, context }, { tools: client.tools, secrets }));
-          return json(response, call.error ? 502 : 200, { report });
+          const failed = call.error || hasBusinessError(call.output);
+          return json(response, failed ? 502 : 200, { report, ...(failed ? { error: '查询未成功，请查看诊断报告中的错误与建议。' } : {}) });
         });
       }
       if (request.method === 'POST' && url.pathname === '/api/live/reset') {
@@ -119,8 +125,8 @@ export function createApp({ token = '', clientFactory = options => new McpClient
       if (request.method !== 'GET' && request.method !== 'HEAD') return json(response, 405, { error: '不支持此请求方法。' });
       let path;
       try { path = decodeURIComponent(url.pathname); } catch { return json(response, 400, { error: '路径编码无效。' }); }
-      const file = path === '/context.mjs' ? sharedContextFile : resolve(publicRoot, '.' + (path === '/' ? '/index.html' : path));
-      if ((file !== sharedContextFile && !file.startsWith(publicRoot + sep)) || !mime[extname(file)]) return json(response, 404, { error: '文件不存在。' });
+      const file = sharedFiles.get(path) || resolve(publicRoot, '.' + (path === '/' ? '/index.html' : path));
+      if ((!sharedFiles.has(path) && !file.startsWith(publicRoot + sep)) || !mime[extname(file)]) return json(response, 404, { error: '文件不存在。' });
       try {
         const content = await readFile(file);
         response.writeHead(200, { 'Content-Type': mime[extname(file)] });

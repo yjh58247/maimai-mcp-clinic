@@ -4,6 +4,7 @@ import { McpClient } from './lib/mcp-client.mjs';
 import { analyzeRun, inspectCall, SAFE_TOOLS } from './lib/diagnostics.mjs';
 import { DEMO_CASES } from './lib/demo.mjs';
 import { markdownReport, redact } from './lib/redact.mjs';
+import { recordValidationError } from './lib/records.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -19,7 +20,8 @@ try {
     const text = await readFile(args[1], 'utf8');
     if (Buffer.byteLength(text) > 1_000_000) throw new Error('导入文件超过1MB。');
     const raw = JSON.parse(text.replace(/^\uFEFF/, ''));
-    if (!Array.isArray(raw.calls) || raw.calls.length > 100) throw new Error('需要包含 calls 数组的记录（最多100条）。');
+    const validation = recordValidationError(raw);
+    if (validation) throw new Error(validation);
     report = analyzeRun({ ...raw, source: 'import' }, { secrets: [process.env.MCD_MCP_TOKEN] });
   } else if (command === 'connect' || command === 'call') {
     if (command === 'call' && !SAFE_TOOLS.has(args[1])) throw new Error('此工具不在查询与核价白名单中。');

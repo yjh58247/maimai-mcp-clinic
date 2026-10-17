@@ -1,4 +1,5 @@
 import { SAFE_TOOLS } from './diagnostics.mjs';
+import { isRecord } from './context.mjs';
 
 export class McpError extends Error {
   constructor(message, status = 0) { super(message); this.name = 'McpError'; this.status = status; }
@@ -78,19 +79,27 @@ export class McpClient {
     }
   }
   async connect() {
-    this.session = null;
-    const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.1' } });
-    if (!['2025-06-18', '2025-03-26'].includes(info.protocolVersion)) throw new McpError('服务端返回了本版本体检站尚未支持的协议版本。');
-    this.version = info.protocolVersion;
-    await this.rpc('notifications/initialized', null, true);
-    const list = []; let cursor;
-    for (let page = 0; page < 10; page++) {
-      const result = await this.rpc('tools/list', cursor ? { cursor } : {});
-      if (!Array.isArray(result.tools)) throw new McpError('tools/list 未返回工具数组。');
-      list.push(...result.tools); cursor = result.nextCursor;
-      if (!cursor) { this.tools = list; return { serverInfo: info.serverInfo, protocolVersion: this.version, tools: list }; }
+    await this.close();
+    this.version = '2025-06-18';
+    try {
+      const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.2' } });
+      if (!isRecord(info) || !['2025-06-18', '2025-03-26'].includes(info.protocolVersion)) throw new McpError('服务端返回了本版本体检站尚未支持的协议版本。');
+      this.version = info.protocolVersion;
+      await this.rpc('notifications/initialized', null, true);
+      const list = [], cursors = new Set(); let cursor;
+      for (let page = 0; page < 10; page++) {
+        const result = await this.rpc('tools/list', cursor ? { cursor } : {});
+        if (!isRecord(result) || !Array.isArray(result.tools) || result.tools.some(tool => !isRecord(tool) || typeof tool.name !== 'string' || !tool.name.trim())) throw new McpError('tools/list 未返回有效的工具数组。');
+        list.push(...result.tools); cursor = result.nextCursor;
+        if (!cursor) { this.tools = list; return { serverInfo: info.serverInfo, protocolVersion: this.version, tools: list }; }
+        if (typeof cursor !== 'string' || cursors.has(cursor)) throw new McpError('工具分页游标无效或重复，已停止读取。');
+        cursors.add(cursor);
+      }
+      throw new McpError('工具分页超过10页，已停止读取。');
+    } catch (error) {
+      await this.close();
+      throw error;
     }
-    throw new McpError('工具分页超过10页，已停止读取。');
   }
   async call(name, args) {
     if (!SAFE_TOOLS.has(name)) throw new McpError('体检站只执行列出的查询与核价工具。', 403);
@@ -105,8 +114,10 @@ export class McpClient {
     }
   }
   async close() {
-    if (!this.session || !this.token) return;
-    try { await this.fetch(this.endpoint, { method: 'DELETE', redirect: 'error', headers: { Authorization: `Bearer ${this.token}`, 'Mcp-Session-Id': this.session, 'MCP-Protocol-Version': this.version }, signal: AbortSignal.timeout(3000) }); } catch {}
+    const session = this.session;
     this.session = null;
+    this.tools = [];
+    if (!session || !this.token) return;
+    try { await this.fetch(this.endpoint, { method: 'DELETE', redirect: 'error', headers: { Authorization: `Bearer ${this.token}`, 'Mcp-Session-Id': session, 'MCP-Protocol-Version': this.version }, signal: AbortSignal.timeout(3000) }); } catch {}
   }
 }

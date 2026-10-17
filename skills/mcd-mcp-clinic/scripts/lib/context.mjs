@@ -20,11 +20,14 @@ export function extractPayload(raw) {
   return raw;
 }
 
+export function hasBusinessError(output) {
+  const payload = extractPayload(output);
+  return Boolean(output?.isError || payload?.success === false ||
+    (payload?.code != null && ![0, 200, '0', '200'].includes(payload.code)));
+}
+
 export function successfulCall(call) {
-  if (!call || call.error || !call.output || call.output.isError) return false;
-  const payload = extractPayload(call.output);
-  return payload != null && payload.success !== false &&
-    (payload.code == null || [0, 200, '0', '200'].includes(payload.code));
+  return Boolean(call && !call.error && extractPayload(call.output) != null && !hasBusinessError(call.output));
 }
 
 export function businessContext(input = {}) {
