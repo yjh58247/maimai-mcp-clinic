@@ -16,30 +16,36 @@ export const TOOL_LABELS = {
 };
 
 function schemaErrors(value, schema, path = '参数', depth = 0) {
-  if (!schema || depth > 12) return [];
+  if (schema === false) return [path + ' 不被当前接口允许'];
+  if (!isRecord(schema) || depth > 12) return [];
   const errors = [];
   const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
   const matches = type => type === 'null' ? value === null : type === 'array' ? Array.isArray(value) : type === 'object' ? value !== null && typeof value === 'object' && !Array.isArray(value) : type === 'integer' ? Number.isInteger(value) : type === 'number' ? typeof value === 'number' && Number.isFinite(value) : typeof value === type;
   if (types.length && !types.some(matches)) return [`${path} 类型应为 ${types.join(' / ')}`];
-  if (schema.enum && !schema.enum.includes(value)) errors.push(`${path} 不在接口允许的取值中`);
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) errors.push(`${path} 不在接口允许的取值中`);
   if (typeof value === 'number' && schema.minimum != null && value < schema.minimum) errors.push(`${path} 小于 ${schema.minimum}`);
+  if (typeof value === 'number' && schema.maximum != null && value > schema.maximum) errors.push(`${path} 大于 ${schema.maximum}`);
   if (typeof value === 'string') {
     if (schema.minLength != null && value.length < schema.minLength) errors.push(`${path} 太短`);
     if (schema.maxLength != null && value.length > schema.maxLength) errors.push(`${path} 太长`);
   }
   if (value && typeof value === 'object' && !Array.isArray(value)) {
-    for (const key of schema.required || []) if (value[key] === undefined) errors.push(`${path}.${key} 为必填项`);
-    for (const [key, val] of Object.entries(value)) if (schema.properties?.[key]) errors.push(...schemaErrors(val, schema.properties[key], `${path}.${key}`, depth + 1));
+    for (const key of (Array.isArray(schema.required) ? schema.required : [])) if (!Object.hasOwn(value, key)) errors.push(`${path}.${key} 为必填项`);
+    for (const [key, val] of Object.entries(value)) {
+      if (isRecord(schema.properties) && Object.hasOwn(schema.properties, key)) errors.push(...schemaErrors(val, schema.properties[key], `${path}.${key}`, depth + 1));
+      else if (schema.additionalProperties === false) errors.push(`${path}.${key} 不在允许的字段中`);
+    }
   }
   if (Array.isArray(value)) {
     if (schema.minItems != null && value.length < schema.minItems) errors.push(`${path} 至少需要 ${schema.minItems} 项`);
-    value.slice(0, 100).forEach((val, i) => errors.push(...schemaErrors(val, schema.items, `${path}[${i}]`, depth + 1)));
+    if (schema.maxItems != null && value.length > schema.maxItems) errors.push(`${path} 最多允许 ${schema.maxItems} 项`);
+    value.forEach((val, i) => errors.push(...schemaErrors(val, schema.items, `${path}[${i}]`, depth + 1)));
   }
   return errors;
 }
 
 function validReservation(value) {
-  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) return false;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) return false;
   const date = new Date(value.replace(' ', 'T') + ':00+08:00');
   return !Number.isNaN(date.valueOf()) && new Date(date.valueOf() + 8 * 3600_000).toISOString().slice(0, 16).replace('T', ' ') === value;
 }
@@ -69,7 +75,7 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
     if (![1, 2, 5, 6].includes(args.beType)) add('BE_TYPE', 'error', '业务类型缺失或无效', '需要明确本次点餐的业务场景。', '传 beType：1自取、2麦乐送、5得来速、6团餐。');
     const expected = [1, 5].includes(args.beType) ? 1 : [2, 6].includes(args.beType) ? 2 : null;
     if (expected && args.orderType !== expected) add('CHANNEL_MISMATCH', 'error', '业务类型与订单类型不匹配', `当前 beType=${args.beType} 应对应 orderType=${expected}。`, `将 orderType 改为 ${expected}，并确认门店来源正确。`, { before: { orderType: args.orderType, beType: args.beType }, after: { orderType: expected, beType: args.beType } });
-    if ([2, 5, 6].includes(args.beType) && !args.beCode) add('BE_CODE_REQUIRED', 'error', '业务编码 beCode 缺失', '得来速、外送和团餐需要同时传递 storeCode 与 beCode。', '从门店查询结果取得同一条记录的 beCode；不要自行编造。', { before: { storeCode: args.storeCode, beType: args.beType }, after: { storeCode: args.storeCode, beType: args.beType, beCode: '<门店查询返回值>' } });
+    if ([2, 5, 6].includes(args.beType) && (typeof args.beCode !== 'string' || !args.beCode.trim())) add('BE_CODE_REQUIRED', 'error', '业务编码 beCode 缺失', '得来速、外送和团餐需要同时传递 storeCode 与 beCode。', '从门店查询结果取得同一条记录的 beCode；不要自行编造。', { before: { storeCode: args.storeCode, beType: args.beType }, after: { storeCode: args.storeCode, beType: args.beType, beCode: '<门店查询返回值>' } });
     if (args.beCode != null && typeof args.beCode !== 'string') add('BE_CODE_TYPE', 'error', '业务编码类型不正确', 'beCode 应保留门店工具返回的字符串类型。', '使用同一条门店结果的 beCode 字符串。');
     if (args.beType === 1 && args.beCode) add('PICKUP_BE_CODE', 'warning', '到店自取无需传 beCode', '当前到店自取请求携带了业务编码。', 'beType=1 时移除 beCode。');
     if (tool === 'query-promotions' && args.beType !== 6) add('PROMOTIONS_SCOPE', 'error', '促销查询仅适用于企业团餐', 'query-promotions 不是普通到店优惠查询。', '企业团餐使用 beType=6、orderType=2；普通订单改查 query-store-coupons。');
@@ -77,7 +83,7 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
     const binding = context.storeBinding;
     if (binding && String(binding.storeCode) === args.storeCode && [2, 5, 6].includes(args.beType) && args.beCode && args.beCode !== binding.beCode) add('STORE_BINDING', 'error', '门店与业务编码配对不一致', '传入 beCode 与记录中的门店查询结果不一致。', '使用同一条门店记录中的 storeCode 和 beCode。');
     if (context.reservation && !args.reservationDate) add('RESERVATION_REQUIRED', 'error', '预约场景缺少时间', '记录声明为预约点餐，当前调用未带预约时间。', '从门店返回的可选预约时段中选择并传 reservationDate。');
-    if (args.reservationDate && !validReservation(args.reservationDate)) add('RESERVATION_FORMAT', 'error', '预约时间格式或日期无效', '接口使用北京时间，格式为 yyyy-MM-dd HH:mm。', '例如 2026-10-20 12:30；该时段还需在门店可预约范围内。');
+    if (args.reservationDate != null && !validReservation(args.reservationDate)) add('RESERVATION_FORMAT', 'error', '预约时间格式或日期无效', '接口使用北京时间，格式为 yyyy-MM-dd HH:mm。', '例如 2026-10-20 12:30；该时段还需在门店可预约范围内。');
   }
   if (tool === 'calculate-price') {
     const inspectModificationShape = (selected, path) => {
@@ -97,9 +103,9 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
     };
     if (!Array.isArray(args.items) || !args.items.length) add('EMPTY_CART', 'error', '核价餐单为空', 'calculate-price 需要至少一项商品。', '从当前门店菜单中选取商品，并传 items。');
     for (const [itemIndex, item] of (Array.isArray(args.items) ? args.items : []).entries()) {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) { add('CART_ITEM', 'error', '商品项不是有效对象', 'items 中每一项都应包含商品编码和数量。', '每项使用 { productCode, quantity } 对象。'); continue; }
-      if (!Number.isInteger(item.quantity) || item.quantity < 1) add('QUANTITY', 'error', '商品数量应为正整数', '商品数量需为大于等于1的整数。', '修正 items[].quantity。');
-      if (!item.productCode || typeof item.productCode !== 'string') add('PRODUCT_CODE', 'error', '商品编码缺失或类型错误', '商品编码需要保留字符串类型。', '使用本次 query-meals 返回的 productCode。');
+      if (!isRecord(item)) { add('CART_ITEM', 'error', '商品项不是有效对象', 'items[' + itemIndex + '] 应包含商品编码和数量。', '每项使用 { productCode, quantity } 对象。'); continue; }
+      if (!Number.isInteger(item.quantity) || item.quantity < 1) add('QUANTITY', 'error', '商品数量应为正整数', 'items[' + itemIndex + '].quantity 需为大于等于1的整数。', '修正该商品的 quantity。');
+      if (typeof item.productCode !== 'string' || !item.productCode.trim()) add('PRODUCT_CODE', 'error', '商品编码缺失或类型错误', 'items[' + itemIndex + '].productCode 需要非空字符串。', '使用本次 query-meals 返回的 productCode。');
       if (Boolean(item.couponId) !== Boolean(item.couponCode)) add('COUPON_PAIR', 'error', '优惠券参数不完整', '使用优惠券时应携带同一张券的 couponId 与 couponCode。', '从门店可用券结果取得完整参数，或同时移除两项。');
       const path = 'items[' + itemIndex + ']';
       inspectModificationShape(item.modification, path + '.modification');
@@ -178,7 +184,9 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
     const payload = extractPayload(call.output);
     const cents = payload?.data?.price;
     const displayed = call.meta?.displayedTotal;
-    if (typeof cents === 'number' && displayed != null && Number.isFinite(Number(displayed)) && Math.abs(Number(displayed) - cents / 100) > 0.005) {
+    const validDisplayed = typeof displayed === 'number' && Number.isFinite(displayed) && displayed >= 0;
+    if (displayed != null && !validDisplayed) add('DISPLAYED_TOTAL', 'error', '页面金额不是有效数字', 'meta.displayedTotal 应为大于等于0的数字，单位为元。', '传入数字金额，不使用字符串、数组或布尔值。');
+    if (!call.error && !hasBusinessError(call.output) && Number.isFinite(cents) && validDisplayed && Math.abs(displayed - cents / 100) > 0.005) {
       add('PRICE_UNIT', 'error', '核价金额展示错误', `price=${cents} 的单位是分，应展示 ¥${(cents / 100).toFixed(2)}。`, '将 calculate-price 的 price 除以100；保留两位小数。', { before: { price: cents, displayedTotal: Number(displayed) }, after: { price: cents, displayedTotal: cents / 100 } });
     }
   }
@@ -190,7 +198,7 @@ export function inspectCall(call, context = {}, previous = [], tools = []) {
     const payload = extractPayload(call.output);
     if (hasBusinessError(call.output)) add('BUSINESS_ERROR', 'error', '接口返回业务错误', String(payload?.message || 'MCP 工具结果标记为错误。'), '根据业务错误重新核对门店、商品与权限；不能将此次结果当成成功报价。');
   }
-  return findings.filter((item, i, all) => all.findIndex(other => other.code === item.code) === i);
+  return findings.filter((item, i, all) => all.findIndex(other => other.code === item.code && other.detail === item.detail) === i);
 }
 
 export function analyzeRun(raw = {}, { tools = [], secrets = [] } = {}) {

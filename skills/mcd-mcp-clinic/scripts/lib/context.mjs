@@ -1,4 +1,5 @@
 // Shared by the portable Skill and the local browser; no credentials or Node APIs.
+import { jsonFragments } from './json-text.mjs';
 export const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 export const canonicalTool = name => String(name || '').replace(/^.*__/, '').replace(/_/g, '-');
 
@@ -9,11 +10,9 @@ export function extractPayload(raw) {
     for (const item of raw.content) {
       if (item?.type !== 'text') continue;
       const text = String(item.text || '').trim();
-      const candidates = [text, text.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1], text.slice(text.indexOf('{')), text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)];
-      for (const candidate of candidates) {
-        if (!candidate) continue;
-        try { return JSON.parse(candidate); } catch {}
-      }
+      try { return JSON.parse(text); } catch {}
+      const first = jsonFragments(text, 1)[0];
+      if (first) return first.value;
     }
     return null;
   }

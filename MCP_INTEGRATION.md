@@ -29,7 +29,7 @@
 
 前5项已通过本项目原生HTTP客户端携带本机Token完成官方端到端联调：协议2025-06-18、发现35个工具、5次查询与核价成功。原生快照见 `examples/native-http-smoke.json`，报告见 [原生HTTP验收](docs/NATIVE_HTTP_VERIFICATION.md)。此前的宿主连接器公共数据快照仍保留在 `examples/real-mcp-smoke.json`。配置中的Token不进入报告或发布包。
 
-上述成功结果来自2026-10-16的v0.1.1。2026-10-17的v0.1.2重测遇到TLS连接中断，未取得新的实时结果；新版已通过76项自动化测试，验收范围见[验证记录](docs/VERIFICATION.md)。
+v0.1.1于2026-10-16首次完成原生联调；v0.1.2曾遇到TLS中断。2026-10-17的v0.1.3已再次成功完成上述5次真实调用，新版通过111项自动化测试，验收范围见[验证记录](docs/VERIFICATION.md)。
 
 ## 业务调用流程
 
@@ -45,7 +45,7 @@
 
 ## 检查边界
 
-- schema校验覆盖type、required、enum、minimum、minLength、maxLength、minItems及嵌套properties / items，并非完整JSON Schema实现。
+- schema校验覆盖type、required、enum、minimum、maximum、minLength、maxLength、minItems、maxItems、禁止额外字段及嵌套properties / items，并非完整JSON Schema实现（如组合schema、引用等未覆盖）。
 - 套餐和特调检查依赖同一商品、门店、时段的已记录详情；没有上游数据时不能推断全部选项。
 - 预约检查覆盖格式、日历合法性和明确预约上下文的必填项，不保证当前库存或可预约性。
 - “未记录门店券校验”表示证据缺失，不断言券不可用。

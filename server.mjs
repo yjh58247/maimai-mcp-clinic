@@ -8,12 +8,13 @@ import { analyzeRun, inspectCall, SAFE_TOOLS, TOOL_LABELS } from './skills/mcd-m
 import { redact } from './skills/mcd-mcp-clinic/scripts/lib/redact.mjs';
 import { DEMO_CASES, SAMPLE_INPUTS } from './skills/mcd-mcp-clinic/scripts/lib/demo.mjs';
 import { readConfig } from './lib/config.mjs';
+import { listenLocal } from './lib/local-server.mjs';
 import { hasBusinessError } from './skills/mcd-mcp-clinic/scripts/lib/context.mjs';
 import { recordValidationError } from './skills/mcd-mcp-clinic/scripts/lib/records.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicRoot = resolve(root, 'public');
-const sharedFiles = new Map(['context.mjs', 'records.mjs'].map(name => ['/' + name, resolve(root, 'skills/mcd-mcp-clinic/scripts/lib', name)]));
+const sharedFiles = new Map(['context.mjs', 'records.mjs', 'json-text.mjs', 'redact.mjs', 'lab.mjs'].map(name => ['/' + name, resolve(root, 'skills/mcd-mcp-clinic/scripts/lib', name)]));
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8' };
 
 async function readJson(request) {
@@ -55,9 +56,13 @@ export function createApp({ token = '', clientFactory = options => new McpClient
       if (origin && !hosts.some(host => origin === `http://${host}`)) return json(response, 403, { error: '已拒绝非本机页面的跨域请求。' });
       if (request.headers['sec-fetch-site'] === 'cross-site') return json(response, 403, { error: '已拒绝跨站请求。' });
       const url = new URL(request.url, `http://127.0.0.1:${port}`);
-      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.2', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
+      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.3', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
       if (request.method === 'GET' && url.pathname === '/api/demos') return json(response, 200, { cases: DEMO_CASES.map(({ run, ...meta }) => ({ ...meta, report: analyzeRun(run) })) });
-      if (request.method === 'GET' && url.pathname === '/api/reports') return json(response, 200, { reports });
+      if (request.method === 'GET' && url.pathname === '/api/reports') return json(response, 200, { reports: reports.map(({ id, title, createdAt, source, sourceLabel, summary, findings }) => ({ id, title, createdAt, source, sourceLabel, summary, findingCount: findings.length })) });
+      if (request.method === 'GET' && url.pathname.startsWith('/api/reports/')) {
+        const report = reports.find(item => item.id === url.pathname.slice('/api/reports/'.length));
+        return report ? json(response, 200, { report }) : json(response, 404, { error: '这份报告已过期或不存在，请重新检查或导入。' });
+      }
       if (request.method === 'POST' && url.pathname === '/api/demo') {
         const body = await readJson(request);
         const example = DEMO_CASES.find(item => item.id === body.caseId);
@@ -107,7 +112,7 @@ export function createApp({ token = '', clientFactory = options => new McpClient
           const call = { tool: body.tool, input: body.input };
           if (body.displayedTotal != null) call.meta = { displayedTotal: body.displayedTotal };
           try { call.output = await client.call(body.tool, body.input); }
-          catch (error) { call.error = { status: error.status, message: error.message }; }
+          catch (error) { call.error = { status: error.status, message: error.message, ...(error.retryAfter != null ? { retryAfter: error.retryAfter } : {}) }; }
           call.durationMs = Math.round(performance.now() - started);
           liveCalls.push(call); liveCalls = liveCalls.slice(-40);
           const report = remember(analyzeRun({ source: 'live', title: '真实 MCP 调用链路', calls: liveCalls, context }, { tools: client.tools, secrets }));
@@ -140,8 +145,10 @@ export function createApp({ token = '', clientFactory = options => new McpClient
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const config = readConfig(root);
   const app = createApp(config);
-  app.server.on('error', error => { console.error(error.code === 'EADDRINUSE' ? `端口 ${config.port} 已占用。请设置 PORT 后重试。` : '本地服务启动失败。'); process.exitCode = 1; });
-  app.server.listen(config.port, '127.0.0.1', () => console.log(`麦麦 MCP 体检站  http://127.0.0.1:${config.port}\nToken：${config.token ? '已在本机配置' : '未配置，可使用离线演示'}\n按 Ctrl+C 停止。`));
+  try {
+    const port = await listenLocal(app.server, config.port);
+    console.log(`麦麦 MCP 体检站  http://127.0.0.1:${port}\nToken：${config.token ? '已在本机配置' : '未配置，可使用离线演示'}\n按 Ctrl+C 停止。`);
+  } catch (error) { console.error(error.code === 'EADDRINUSE' ? '尝试的本机端口均被占用。请设置 PORT 后重试。' : '本地服务启动失败。'); process.exitCode = 1; }
   const stop = async () => { await app.close(); app.server.close(); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
 }

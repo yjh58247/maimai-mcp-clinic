@@ -1,12 +1,14 @@
 import { selectionFromTrace, requestTemplate } from './context.mjs';
 import { recordValidationError } from './records.mjs';
+import { markdownReport } from './redact.mjs';
+import { inspectionRun } from './lab.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const icon = name => '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>';
 const pretty = value => JSON.stringify(value ?? null, null, 2);
-const state = { mode: 'demo', page: 'overview', report: null, labReport: null, cases: [], reports: [], status: null, busy: false, payload: 'output', callIndex: 0, stores: [], products: [], selectedStore: '', selectedProduct: '', activeContext: {}, liveReport: null };
+const state = { mode: 'demo', page: 'overview', report: null, labReport: null, cases: [], reports: [], status: null, busy: false, payload: 'output', callIndex: 0, stores: [], products: [], selectedStore: '', selectedProduct: '', activeContext: {}, liveReport: null, inspectionContext: null };
 let toastTimer;
 
 function toast(message) {
@@ -21,7 +23,8 @@ async function api(path, body) {
 }
 function setBusy(busy) {
   state.busy = busy;
-  ['#run-case', '#hero-run', '#inspect-button', '#live-call-button', '#connect-button', '#case-select', '#mode-demo', '#mode-live', '#import-button', '#tool-select', '#store-picker', '#product-picker', '#fill-sample', '#input-json', '#output-json', '#displayed-total', '#edit-call'].forEach(selector => $(selector).disabled = busy);
+  ['#run-case', '#hero-run', '#inspect-button', '#live-call-button', '#connect-button', '#case-select', '#mode-demo', '#mode-live', '#import-button', '#tool-select', '#store-picker', '#product-picker', '#fill-sample', '#input-json', '#output-json', '#displayed-total', '#edit-call'].forEach(selector => $(selector).disabled = busy || !state.status);
+  $('.workspace').setAttribute('aria-busy', String(busy));
   $('#run-case span').textContent = busy ? '检查中…' : '运行体检';
 }
 function go(page) {
@@ -40,6 +43,7 @@ function go(page) {
 function switchMode(mode) {
   if (state.busy) return;
   state.mode = mode;
+  state.inspectionContext = null;
   ['demo', 'live'].forEach(name => { $('#mode-' + name).classList.toggle('selected', mode === name); $('#mode-' + name).setAttribute('aria-pressed', String(mode === name)); });
   $('#live-banner').classList.toggle('hidden', mode !== 'live');
   $('#live-call-button').classList.toggle('hidden', mode !== 'live');
@@ -69,7 +73,7 @@ function renderReport(report, revealCount = null) {
   $('#flow-source').textContent = report.sourceLabel;
   $('#flow-description').textContent = report.title;
   const calls = revealCount == null ? report.calls : report.calls.slice(0, revealCount);
-  $('#flow-list').innerHTML = calls.map((call, index) => '<button class="flow-row ' + esc(call.status) + (revealCount == null ? '' : ' revealing') + '" data-call="' + index + '"><span class="flow-number">' + String(index + 1).padStart(2, '0') + '</span><span class="flow-status-icon">' + icon(call.status === 'passed' ? 'check' : 'alert') + '</span><span class="flow-name"><strong>' + esc(call.label) + '</strong><small>' + esc(call.tool) + '</small></span><span class="flow-badge">' + (call.status === 'passed' ? '通过' : call.findings.length + '项问题') + '</span><span class="flow-duration">' + (call.durationMs ?? '—') + ' ms</span></button>').join('');
+  $('#flow-list').innerHTML = calls.map((call, index) => '<button class="flow-row ' + esc(call.status) + (revealCount == null ? '' : ' revealing') + '" data-call="' + index + '"><span class="flow-number">' + String(index + 1).padStart(2, '0') + '</span><span class="flow-status-icon">' + icon(call.status === 'passed' ? 'check' : 'alert') + '</span><span class="flow-name"><strong>' + esc(call.label) + '</strong><small>' + esc(call.tool) + '</small></span><span class="flow-badge">' + (call.status === 'passed' ? '通过' : call.findings.length + '项问题') + '</span><span class="flow-duration">' + esc(call.durationMs ?? '—') + ' ms</span></button>').join('');
   $('#findings').innerHTML = report.findings.length ? [...report.findings].sort((a, b) => (a.severity === 'error' ? 0 : 1) - (b.severity === 'error' ? 0 : 1)).map(findingHtml).join('') : noFindingsHtml();
   $('#finding-count').textContent = report.findings.length;
   $('#flow-status').textContent = revealCount != null ? '正在回放离线记录，未发送真实请求…' : report.source === 'demo' ? '案例回放完成 · 菜单与价格为虚构数据' : report.sourceLabel + ' · 记录范围内检查完成';
@@ -103,6 +107,8 @@ function updatePickers(report) {
   $('#product-picker').value = state.selectedProduct;
 }
 function fillSample() {
+  if (!state.status) return;
+  state.inspectionContext = null;
   const tool = $('#tool-select').value;
   const report = state.mode === 'live' ? state.liveReport : state.report;
   const input = requestTemplate(state.status.samples[tool] || {}, {
@@ -131,7 +137,8 @@ async function inspect(live = false) {
   if (live && !state.status.connected) { toast('请先在真实接入模式完成连接检查。'); return; }
   setBusy(true);
   try {
-    const body = live ? { tool: $('#tool-select').value, input, displayedTotal } : { title: '手动调用检查', calls: [{ tool: $('#tool-select').value, input, output, ...(displayedTotal != null ? { meta: { displayedTotal } } : {}) }] };
+    const body = live ? { tool: $('#tool-select').value, input, displayedTotal } : inspectionRun({ tool: $('#tool-select').value, input, output, displayedTotal,
+      report: state.inspectionContext?.report || (state.mode === 'live' ? state.liveReport : state.report), callIndex: state.inspectionContext?.callIndex });
     const { report } = await api(live ? '/api/live/call' : '/api/analyze', body);
     state.labReport = report;
     if (live) state.liveReport = report;
@@ -181,16 +188,28 @@ function editCall() {
   $('#displayed-total').value = call.meta?.displayedTotal ?? '';
   if (call.output || call.meta) $('.optional-output').open = true;
   state.labReport = report; renderLab();
+  state.inspectionContext = { report, callIndex: state.callIndex };
 }
 async function refreshReports() {
+  try {
   state.reports = (await api('/api/reports')).reports;
   $('#report-count').textContent = state.reports.length;
-  $('#reports-list').innerHTML = state.reports.length ? state.reports.map(report => '<button class="report-row" data-report="' + esc(report.id) + '"><span><strong>' + esc(report.title) + '</strong><small>' + esc(report.sourceLabel) + '</small></span><span class="report-time">' + esc(new Date(report.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })) + '</span><span class="report-stat">' + report.summary.total + ' calls</span><span class="report-status ' + (report.findings.length ? '' : 'clean') + '">' + (report.findings.length ? report.findings.length + '项问题' : '检查通过') + '</span></button>').join('') : '<div class="empty-reports">还没有体检记录<br>运行一个案例，或导入已有 JSON 报告。</div>';
+  $('#reports-list').innerHTML = state.reports.length ? state.reports.map(report => '<button class="report-row" data-report="' + esc(report.id) + '"><span><strong>' + esc(report.title) + '</strong><small>' + esc(report.sourceLabel) + '</small></span><span class="report-time">' + esc(new Date(report.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })) + '</span><span class="report-stat">' + report.summary.total + ' calls</span><span class="report-status ' + (report.findingCount ? '' : 'clean') + '">' + (report.findingCount ? report.findingCount + '项问题' : '检查通过') + '</span></button>').join('') : '<div class="empty-reports">还没有体检记录<br>运行一个案例，或导入已有 JSON 报告。</div>';
+  } catch (error) { toast('记录列表暂未刷新：' + error.message); }
+}
+async function openReport(id) {
+  if (state.busy) return;
+  setBusy(true);
+  try {
+    const { report } = await api('/api/reports/' + encodeURIComponent(id));
+    state.inspectionContext = null; renderReport(report); state.labReport = report; go('overview'); toast('已打开记录：' + report.title);
+  } catch (error) { toast(error.message); }
+  finally { setBusy(false); }
 }
 function download(format) {
   if (!state.report) return toast('请先运行一次体检。');
   const report = state.report;
-  const md = ['# 麦麦 MCP 体检报告', '', '- 来源：' + report.sourceLabel, '- 时间：' + report.createdAt, '- 调用：' + report.summary.total + '；问题：' + report.findings.length, '', '本报告只反映记录范围内的检查。离线与导入记录不代表实时结果。', '', ...report.findings.flatMap(item => ['## ' + item.title, '', item.detail, '', '建议：' + item.fix, '']), '## 脱敏调用记录', '', '~~~json', pretty(report.calls), '~~~', '', '已知敏感字段已脱敏；分享前请检查自由文本。'].join('\n');
+  const md = format === 'md' ? markdownReport(report) : '';
   const blob = new Blob([format === 'json' ? pretty(report) : md], { type: format === 'json' ? 'application/json' : 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob), a = document.createElement('a');
   a.href = url; a.download = 'mcd-clinic-' + report.source + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + format;
@@ -209,6 +228,7 @@ async function importFile(file) {
     if (validation) { toast(validation); return; }
     if (new TextEncoder().encode(JSON.stringify(raw)).length > 1_000_000) { toast('记录编码后超过1MB，请缩小范围。'); return; }
     const { report } = await api('/api/analyze', raw);
+    state.inspectionContext = null;
     renderReport(report); state.labReport = report; await refreshReports(); go('overview');
     toast('导入完成，已重新脱敏并检查；没有进行实时调用。');
   } catch (error) { toast(error.message); } finally { setBusy(false); $('#import-file').value = ''; }
@@ -217,7 +237,7 @@ document.addEventListener('click', event => {
   const navigation = event.target.closest('[data-page]'); if (navigation) go(navigation.dataset.page);
   const caseButton = event.target.closest('[data-case]'); if (caseButton) runCase(caseButton.dataset.case);
   const callButton = event.target.closest('[data-call]'); if (callButton && !callButton.closest('#call-dialog')) showCall(Number(callButton.dataset.call));
-  const reportButton = event.target.closest('[data-report]'); if (reportButton) { const report = state.reports.find(r => r.id === reportButton.dataset.report); renderReport(report); state.labReport = report; go('overview'); toast('已打开记录：' + report.title); }
+  const reportButton = event.target.closest('[data-report]'); if (reportButton) openReport(reportButton.dataset.report);
   const payloadButton = event.target.closest('[data-payload]'); if (payloadButton) { state.payload = payloadButton.dataset.payload; $$('.payload-tabs button').forEach(button => button.classList.toggle('active', button === payloadButton)); renderLab(); }
 });
 ['#guide-nav', '#guide-top'].forEach(selector => $(selector).addEventListener('click', () => $('#guide-dialog').showModal()));
@@ -239,9 +259,12 @@ $('#export-quick').onclick = () => download('json'); $('#export-json').onclick =
 $('#import-button').onclick = () => $('#import-file').click(); $('#import-file').onchange = () => importFile($('#import-file').files[0]);
 $('#copy-result').onclick = async () => { if (!state.labReport) return toast('还没有可复制的报告。'); try { await navigator.clipboard.writeText(pretty(state.labReport)); toast('已复制脱敏报告。'); } catch { toast('浏览器未允许复制，请使用导出报告。'); } };
 $$('textarea').forEach(textarea => textarea.addEventListener('keydown', event => { if (event.key === 'Tab') { event.preventDefault(); const at = textarea.selectionStart, end = textarea.selectionEnd; textarea.setRangeText('  ', at, end, 'end'); } }));
+setBusy(true);
 try {
   const [status, demos] = await Promise.all([api('/api/status'), api('/api/demos')]);
   state.status = status; state.cases = demos.cases; renderCases();
+  $('.version').textContent = 'v' + status.version;
   $('#tool-select').innerHTML = status.tools.map(tool => '<option value="' + esc(tool.name) + '">' + esc(tool.name) + ' · ' + esc(tool.label) + '</option>').join('');
   renderReport(state.cases[0].report); fillSample(); renderLab(); await refreshReports(); updateLiveText();
-} catch (error) { $('#flow-status').textContent = '加载失败，请确认本地服务正在运行。'; toast(error.message); }
+} catch (error) { $('#flow-status').textContent = '加载失败，请确认本地服务正在运行并刷新页面。'; toast(error.message); }
+finally { setBusy(false); }

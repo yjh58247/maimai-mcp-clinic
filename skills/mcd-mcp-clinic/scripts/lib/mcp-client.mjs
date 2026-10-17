@@ -2,7 +2,10 @@ import { SAFE_TOOLS } from './diagnostics.mjs';
 import { isRecord } from './context.mjs';
 
 export class McpError extends Error {
-  constructor(message, status = 0) { super(message); this.name = 'McpError'; this.status = status; }
+  constructor(message, status = 0, { retryAfter } = {}) {
+    super(message); this.name = 'McpError'; this.status = status;
+    if (Number.isFinite(retryAfter) && retryAfter >= 0) this.retryAfter = retryAfter;
+  }
 }
 
 export class McpClient {
@@ -24,13 +27,18 @@ export class McpClient {
     if (method !== 'initialize') headers['MCP-Protocol-Version'] = this.version;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let reader;
+    let reader, response;
     try {
-      const response = await this.fetch(this.endpoint, {
+      response = await this.fetch(this.endpoint, {
         method: 'POST', headers, redirect: 'error', signal: controller.signal,
         body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, ...(params ? { params } : {}) })
       });
-      if (!response.ok) throw new McpError(`MCP HTTP ${response.status}${response.status === 429 ? '：请求频率过高' : ''}`, response.status);
+      if (!response.ok) {
+        const header = response.headers.get('retry-after');
+        const seconds = header && /^\d+$/.test(header) ? Number(header) : header ? Math.ceil((Date.parse(header) - Date.now()) / 1000) : undefined;
+        const retryAfter = Number.isFinite(seconds) ? Math.max(0, seconds) : undefined;
+        throw new McpError(`MCP HTTP ${response.status}${response.status === 429 ? '：请求频率过高' : ''}${retryAfter != null ? `；建议等待${retryAfter}秒后手动重试` : ''}`, response.status, { retryAfter });
+      }
       if (method === 'initialize') this.session = response.headers.get('mcp-session-id');
       if (notification) { await response.body?.cancel(); return null; }
       const isStream = response.headers.get('content-type')?.includes('text/event-stream');
@@ -72,17 +80,21 @@ export class McpClient {
     } catch (error) {
       if (error instanceof McpError) throw error;
       if (controller.signal.aborted) throw new McpError('MCP 请求超时，已停止等待。', 408);
+      const code = error.cause?.code || error.code;
+      if (['ECONNRESET', 'UND_ERR_SOCKET'].includes(code)) throw new McpError('连接在握手或传输中断，请检查网络或本机代理后手动重试。');
+      if (['ENOTFOUND', 'EAI_AGAIN'].includes(code)) throw new McpError('无法解析 MCP 服务器地址，请检查本机 DNS 与网络。');
+      if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN'].includes(code)) throw new McpError('TLS 证书校验失败，请检查系统时间及本机可信证书配置。');
       throw new McpError('无法连接麦当劳 MCP，请检查网络或本机代理。');
     } finally {
       clearTimeout(timer);
-      try { await reader?.cancel(); } catch {}
+      try { if (reader) await reader.cancel(); else await response?.body?.cancel(); } catch {}
     }
   }
   async connect() {
     await this.close();
     this.version = '2025-06-18';
     try {
-      const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.2' } });
+      const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.3' } });
       if (!isRecord(info) || !['2025-06-18', '2025-03-26'].includes(info.protocolVersion)) throw new McpError('服务端返回了本版本体检站尚未支持的协议版本。');
       this.version = info.protocolVersion;
       await this.rpc('notifications/initialized', null, true);
@@ -103,14 +115,21 @@ export class McpClient {
   }
   async call(name, args) {
     if (!SAFE_TOOLS.has(name)) throw new McpError('体检站只执行列出的查询与核价工具。', 403);
+    if (!isRecord(args)) throw new McpError('工具参数必须是 JSON 对象。', 400);
     if (!this.tools.length) await this.connect();
     if (!this.tools.some(t => t.name === name)) throw new McpError('当前 tools/list 未发现该工具。', 400);
-    try { return await this.rpc('tools/call', { name, arguments: args }); }
+    const invoke = async () => {
+      if (!this.tools.some(t => t.name === name)) throw new McpError('当前 tools/list 未发现该工具。', 400);
+      const result = await this.rpc('tools/call', { name, arguments: args });
+      if (!isRecord(result)) throw new McpError('工具响应不是有效的 JSON 对象。');
+      return result;
+    };
+    try { return await invoke(); }
     catch (error) {
       // Only whitelisted read operations are retried, and only once after session expiry.
       if (error.status !== 404 || !this.session) throw error;
       await this.connect();
-      return await this.rpc('tools/call', { name, arguments: args });
+      return await invoke();
     }
   }
   async close() {
