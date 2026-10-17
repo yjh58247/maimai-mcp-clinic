@@ -13,5 +13,7 @@ export function recordValidationError(raw, { reportOnly = false } = {}) {
   if (index >= 0) return 'calls[' + index + '] 需要包含非空字符串 tool。';
   const timing = raw.calls.findIndex(call => call.durationMs != null && (typeof call.durationMs !== 'number' || !Number.isFinite(call.durationMs) || call.durationMs < 0));
   if (timing >= 0) return 'calls[' + timing + '].durationMs 应为大于等于0的数字。';
+  if (!Number.isFinite(raw.calls.reduce((sum, call) => sum + (call.durationMs || 0), 0)))
+    return '调用耗时合计超出可表示范围，请检查 durationMs。';
   return null;
 }

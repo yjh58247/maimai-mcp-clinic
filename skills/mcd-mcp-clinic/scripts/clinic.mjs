@@ -3,7 +3,7 @@ import { open, writeFile } from 'node:fs/promises';
 import { McpClient } from './lib/mcp-client.mjs';
 import { analyzeRun, inspectCall, SAFE_TOOLS } from './lib/diagnostics.mjs';
 import { DEMO_CASES } from './lib/demo.mjs';
-import { markdownReport, redact } from './lib/redact.mjs';
+import { markdownReport, redact, stringifyReport } from './lib/redact.mjs';
 import { recordValidationError } from './lib/records.mjs';
 
 const args = process.argv.slice(2);
@@ -73,9 +73,9 @@ try {
     }
   }
   if (report) {
-    console.log(options.json ? JSON.stringify(report, null, 2) : markdownReport(report));
+    console.log(options.json ? stringifyReport(report) : markdownReport(report));
     const output = options.out;
-    if (output) await writeFile(output, output.endsWith('.json') ? JSON.stringify(report, null, 2) : markdownReport(report), 'utf8');
+    if (output) await writeFile(output, output.endsWith('.json') ? stringifyReport(report) : markdownReport(report), 'utf8');
     if (['connect', 'call'].includes(command) && report.calls.some(call => call.error)) process.exitCode = 1;
     else if (report.summary.errors) process.exitCode = 2;
   }

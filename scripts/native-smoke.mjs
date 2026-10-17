@@ -4,7 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { readConfig } from '../lib/config.mjs';
 import { McpClient } from '../skills/mcd-mcp-clinic/scripts/lib/mcp-client.mjs';
 import { analyzeRun, extractPayload, inspectCall } from '../skills/mcd-mcp-clinic/scripts/lib/diagnostics.mjs';
-import { redact, markdownReport } from '../skills/mcd-mcp-clinic/scripts/lib/redact.mjs';
+import { redact, markdownReport, stringifyReport } from '../skills/mcd-mcp-clinic/scripts/lib/redact.mjs';
 import { requestTemplate } from '../skills/mcd-mcp-clinic/scripts/lib/context.mjs';
 import { SAMPLE_INPUTS } from '../skills/mcd-mcp-clinic/scripts/lib/demo.mjs';
 
@@ -51,9 +51,9 @@ try {
   const evidence = { transport: '本项目原生 Streamable HTTP 客户端', endpoint: client.endpoint, protocolVersion: connection.protocolVersion, serverInfo: connection.serverInfo, toolCount: client.tools.length, serverDate: time?.date };
   const report = analyzeRun({ source: 'live', title: '原生 HTTP 官方端到端联调', context: { evidence }, calls }, { tools: client.tools, secrets: [token] });
   if (report.summary.errors) throw new Error('链路报告存在需修复项。');
-  await writeFile(resolve(root, 'examples/native-http-smoke.json'), JSON.stringify(report, null, 2), 'utf8');
+  await writeFile(resolve(root, 'examples/native-http-smoke.json'), stringifyReport(report), 'utf8');
   await writeFile(resolve(root, 'docs/NATIVE_HTTP_VERIFICATION.md'), markdownReport(report), 'utf8');
-  console.log(JSON.stringify(redact({ status: 'passed', protocolVersion: connection.protocolVersion, toolCount: client.tools.length, calls: calls.length, storeCode: store.storeCode, productCode, priceYuan: quote.price / 100 }, [token])));
+  console.log(JSON.stringify(redact({ status: 'passed', protocolVersion: connection.protocolVersion, toolCount: client.tools.length, calls: calls.length, storeCode: store.storeCode, productCode, priceYuan: quote.price / 100, warnings: report.summary.warnings, reportTruncated: Boolean(report.truncation?.truncated) }, [token])));
 } catch (error) {
   console.error(JSON.stringify(redact({ status: 'failed', phase, error: error.message, completedCalls: calls.length }, [token])));
   process.exitCode = 1;

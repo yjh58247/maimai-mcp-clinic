@@ -1,6 +1,6 @@
 import { selectionFromTrace, requestTemplate } from './context.mjs';
 import { recordValidationError } from './records.mjs';
-import { markdownReport } from './redact.mjs';
+import { markdownReport, stringifyReport } from './redact.mjs';
 import { inspectionRun } from './lab.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -66,17 +66,19 @@ function renderReport(report, revealCount = null) {
   const summary = report.summary;
   $('#stat-total').textContent = summary.total;
   $('#stat-passed').textContent = summary.passed;
-  $('#stat-issues').textContent = report.findings.length;
+  $('#stat-issues').textContent = summary.errors + summary.warnings;
   $('#stat-time').textContent = summary.timedCalls ? (summary.durationMs / 1000).toFixed(2) : '—';
   $('#stat-time-note').textContent = !summary.timedCalls ? '当前记录未包含调用耗时' : report.source === 'demo' ? '演示耗时 · 非实时性能测试' : '记录内调用耗时合计';
   $('#stat-issues-note').textContent = summary.errors + '项需修复 · ' + summary.warnings + '项需确认';
   $('#flow-source').textContent = report.sourceLabel;
   $('#flow-description').textContent = report.title;
   const calls = revealCount == null ? report.calls : report.calls.slice(0, revealCount);
-  $('#flow-list').innerHTML = calls.map((call, index) => '<button class="flow-row ' + esc(call.status) + (revealCount == null ? '' : ' revealing') + '" data-call="' + index + '"><span class="flow-number">' + String(index + 1).padStart(2, '0') + '</span><span class="flow-status-icon">' + icon(call.status === 'passed' ? 'check' : 'alert') + '</span><span class="flow-name"><strong>' + esc(call.label) + '</strong><small>' + esc(call.tool) + '</small></span><span class="flow-badge">' + (call.status === 'passed' ? '通过' : call.findings.length + '项问题') + '</span><span class="flow-duration">' + esc(call.durationMs ?? '—') + ' ms</span></button>').join('');
+  $('#flow-list').innerHTML = calls.map((call, index) => '<button class="flow-row ' + esc(call.status) + (revealCount == null ? '' : ' revealing') + '" data-call="' + index + '"><span class="flow-number">' + String(index + 1).padStart(2, '0') + '</span><span class="flow-status-icon">' + icon(call.status === 'passed' ? 'check' : 'alert') + '</span><span class="flow-name"><strong>' + esc(call.label) + '</strong><small>' + esc(call.tool) + '</small></span><span class="flow-badge">' + (call.status === 'passed' ? '通过' : (call.findingCount ?? call.findings.length) + '项问题') + '</span><span class="flow-duration">' + esc(call.durationMs ?? '—') + ' ms</span></button>').join('');
   $('#findings').innerHTML = report.findings.length ? [...report.findings].sort((a, b) => (a.severity === 'error' ? 0 : 1) - (b.severity === 'error' ? 0 : 1)).map(findingHtml).join('') : noFindingsHtml();
-  $('#finding-count').textContent = report.findings.length;
+  const issueCount = summary.errors + summary.warnings;
+  $('#finding-count').textContent = report.findings.length === issueCount ? issueCount : report.findings.length + ' / ' + issueCount;
   $('#flow-status').textContent = revealCount != null ? '正在回放离线记录，未发送真实请求…' : report.source === 'demo' ? '案例回放完成 · 菜单与价格为虚构数据' : report.sourceLabel + ' · 记录范围内检查完成';
+  if (report.truncation?.truncated) $('#flow-status').textContent += ' · 部分内容已省略，回放范围受限';
   $('#flow-dot').classList.toggle('green', !report.findings.length);
   if (revealCount == null) updatePickers(state.mode === 'live' ? state.liveReport : report);
 }
@@ -172,6 +174,7 @@ function showCall(index) {
   state.callIndex = index; state.dialogReport = report;
   $('#call-dialog-title').textContent = call.label + ' · ' + call.tool;
   $('#call-dialog-content').innerHTML = '<span class="tiny-label">' + esc(report.sourceLabel) + '</span>' + (call.findings.length ? call.findings.map(findingHtml).join('') : '') + '<h3>调用参数 · INPUT</h3><pre>' + esc(pretty(call.input)) + '</pre><h3>工具响应 · OUTPUT</h3><pre>' + esc(pretty(call.error || call.output || { note: call.note || '记录未包含响应' })) + '</pre>';
+  if ((call.findingCount ?? call.findings.length) > call.findings.length) $('#call-dialog-content').insertAdjacentHTML('afterbegin', '<p class="editor-hint">该调用部分诊断未展开；请缩小记录范围查看完整结果。</p>');
   $('#call-dialog').showModal();
 }
 function editCall() {
@@ -209,8 +212,10 @@ async function openReport(id) {
 function download(format) {
   if (!state.report) return toast('请先运行一次体检。');
   const report = state.report;
-  const md = format === 'md' ? markdownReport(report) : '';
-  const blob = new Blob([format === 'json' ? pretty(report) : md], { type: format === 'json' ? 'application/json' : 'text/markdown;charset=utf-8' });
+  let content;
+  try { content = format === 'json' ? stringifyReport(report) : markdownReport(report); }
+  catch (error) { toast('导出失败：' + error.message); return; }
+  const blob = new Blob([content], { type: format === 'json' ? 'application/json' : 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob), a = document.createElement('a');
   a.href = url; a.download = 'mcd-clinic-' + report.source + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + format;
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -257,7 +262,7 @@ $('#inspect-button').onclick = () => inspect(false); $('#live-call-button').oncl
 $('#edit-call').onclick = editCall;
 $('#export-quick').onclick = () => download('json'); $('#export-json').onclick = () => download('json'); $('#export-md').onclick = () => download('md');
 $('#import-button').onclick = () => $('#import-file').click(); $('#import-file').onchange = () => importFile($('#import-file').files[0]);
-$('#copy-result').onclick = async () => { if (!state.labReport) return toast('还没有可复制的报告。'); try { await navigator.clipboard.writeText(pretty(state.labReport)); toast('已复制脱敏报告。'); } catch { toast('浏览器未允许复制，请使用导出报告。'); } };
+$('#copy-result').onclick = async () => { if (!state.labReport) return toast('还没有可复制的报告。'); try { await navigator.clipboard.writeText(stringifyReport(state.labReport)); toast('已复制脱敏报告。'); } catch { toast('浏览器未允许复制，请使用导出报告。'); } };
 $$('textarea').forEach(textarea => textarea.addEventListener('keydown', event => { if (event.key === 'Tab') { event.preventDefault(); const at = textarea.selectionStart, end = textarea.selectionEnd; textarea.setRangeText('  ', at, end, 'end'); } }));
 setBusy(true);
 try {

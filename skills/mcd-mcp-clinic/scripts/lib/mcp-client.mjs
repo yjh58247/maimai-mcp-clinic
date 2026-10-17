@@ -102,7 +102,7 @@ export class McpClient {
     await this.close();
     this.version = '2025-06-18';
     try {
-      const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.6' } });
+      const info = await this.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'maimai-mcp-clinic', version: '0.1.7' } });
       if (!isRecord(info) || !['2025-06-18', '2025-03-26'].includes(info.protocolVersion)) throw new McpError('服务端返回了本版本体检站尚未支持的协议版本。');
       this.version = info.protocolVersion;
       await this.rpc('notifications/initialized', null, true);

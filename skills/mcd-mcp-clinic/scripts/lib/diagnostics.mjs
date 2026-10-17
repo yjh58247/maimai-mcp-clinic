@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { redact } from './redact.mjs';
+import { redactReport } from './redact.mjs';
 import { isRecord, canonicalTool, extractPayload, hasBusinessError, findMatchingCall, resolveCallContext } from './context.mjs';
 export { canonicalTool, extractPayload } from './context.mjs';
 
@@ -253,7 +253,7 @@ export function analyzeRun(raw = {}, { tools = [], secrets = [] } = {}) {
   const inspected = calls.map((call, index) => {
     const issues = inspectCall(call, context, calls.slice(0, index), tools).map(f => ({ ...f, callIndex: index }));
     findings.push(...issues);
-    return { ...call, tool: canonicalTool(call.tool), label: TOOL_LABELS[canonicalTool(call.tool)] || canonicalTool(call.tool), findings: issues, status: issues.some(f => f.severity === 'error') ? 'error' : issues.length ? 'warning' : 'passed' };
+    return { ...call, tool: canonicalTool(call.tool), label: TOOL_LABELS[canonicalTool(call.tool)] || canonicalTool(call.tool), findings: issues, findingCount: issues.length, status: issues.some(f => f.severity === 'error') ? 'error' : issues.length ? 'warning' : 'passed' };
   });
   const source = ['demo', 'live', 'import', 'manual'].includes(raw.source) ? raw.source : 'manual';
   const report = {
@@ -261,9 +261,9 @@ export function analyzeRun(raw = {}, { tools = [], secrets = [] } = {}) {
     title: String(raw.title || 'MCP 调用体检').slice(0, 120),
     createdAt: new Date().toISOString(), source,
     sourceLabel: { demo: '离线演示 · 虚构数据', live: '本机真实 MCP 调用', import: '导入回放 · 未进行实时验证', manual: '手动检查 · 未进行实时调用' }[source],
-    context,
+    context, ...(raw.truncation?.truncated === true ? { truncation: { truncated: true } } : {}),
     summary: { total: calls.length, passed: inspected.filter(c => c.status === 'passed').length, attention: inspected.filter(c => c.status !== 'passed').length, errors: findings.filter(f => f.severity === 'error').length, warnings: findings.filter(f => f.severity === 'warning').length, timedCalls: calls.filter(call => Number.isFinite(call.durationMs)).length, durationMs: calls.reduce((sum, call) => sum + (Number.isFinite(call.durationMs) ? Math.max(0, call.durationMs) : 0), 0) },
     findings, calls: inspected
   };
-  return redact(report, secrets);
+  return redactReport(report, secrets);
 }

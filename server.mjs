@@ -5,7 +5,7 @@ import { dirname, resolve, extname, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { McpClient } from './skills/mcd-mcp-clinic/scripts/lib/mcp-client.mjs';
 import { analyzeRun, inspectCall, SAFE_TOOLS, TOOL_LABELS } from './skills/mcd-mcp-clinic/scripts/lib/diagnostics.mjs';
-import { redact } from './skills/mcd-mcp-clinic/scripts/lib/redact.mjs';
+import { redact, redactReport } from './skills/mcd-mcp-clinic/scripts/lib/redact.mjs';
 import { DEMO_CASES, SAMPLE_INPUTS } from './skills/mcd-mcp-clinic/scripts/lib/demo.mjs';
 import { readConfig } from './lib/config.mjs';
 import { listenLocal } from './lib/local-server.mjs';
@@ -37,7 +37,13 @@ export function createApp({ token = '', clientFactory = options => new McpClient
   let liveCalls = [], busy = false, connected = null;
   const remember = report => { reports.unshift(report); reports.splice(20); return report; };
   const secrets = [token];
-  const json = (response, status, data) => { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); response.end(JSON.stringify(redact(data, secrets))); };
+  const json = (response, status, data) => {
+    const { report, ...rest } = data;
+    const safe = redact(rest, secrets);
+    if (report) safe.report = redactReport(report, secrets);
+    response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify(safe));
+  };
   const runLive = async task => {
     if (busy) throw Object.assign(new Error('已有真实调用正在运行，请等待完成。'), { status: 409 });
     busy = true;
@@ -56,9 +62,9 @@ export function createApp({ token = '', clientFactory = options => new McpClient
       if (origin && !hosts.some(host => origin === `http://${host}`)) return json(response, 403, { error: '已拒绝非本机页面的跨域请求。' });
       if (request.headers['sec-fetch-site'] === 'cross-site') return json(response, 403, { error: '已拒绝跨站请求。' });
       const url = new URL(request.url, `http://127.0.0.1:${port}`);
-      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.6', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
+      if (request.method === 'GET' && url.pathname === '/api/status') return json(response, 200, { version: '0.1.7', tokenConfigured: Boolean(token), endpoint: 'https://mcp.mcd.cn', connected: Boolean(connected), tools: [...SAFE_TOOLS].map(name => ({ name, label: TOOL_LABELS[name] })), samples: SAMPLE_INPUTS });
       if (request.method === 'GET' && url.pathname === '/api/demos') return json(response, 200, { cases: DEMO_CASES.map(({ run, ...meta }) => ({ ...meta, report: analyzeRun(run) })) });
-      if (request.method === 'GET' && url.pathname === '/api/reports') return json(response, 200, { reports: reports.map(({ id, title, createdAt, source, sourceLabel, summary, findings }) => ({ id, title, createdAt, source, sourceLabel, summary, findingCount: findings.length })) });
+      if (request.method === 'GET' && url.pathname === '/api/reports') return json(response, 200, { reports: reports.map(({ id, title, createdAt, source, sourceLabel, summary }) => ({ id, title, createdAt, source, sourceLabel, summary, findingCount: summary.errors + summary.warnings })) });
       if (request.method === 'GET' && url.pathname.startsWith('/api/reports/')) {
         const report = reports.find(item => item.id === url.pathname.slice('/api/reports/'.length));
         return report ? json(response, 200, { report }) : json(response, 404, { error: '这份报告已过期或不存在，请重新检查或导入。' });
